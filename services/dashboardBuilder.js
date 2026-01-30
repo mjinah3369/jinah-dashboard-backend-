@@ -357,6 +357,7 @@ function buildCurrencyInstruments(currencyData) {
     if (data) {
       const reasons = generateCurrencyReasons(symbol, data);
       const relevantNews = getNewsForInstrument(symbol);
+      const contextBlurb = generateCurrencyBlurb(symbol, data, relevantNews);
 
       currencies[symbol] = {
         name: data.name,
@@ -367,7 +368,8 @@ function buildCurrencyInstruments(currencyData) {
         fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
         fiftyTwoWeekLow: data.fiftyTwoWeekLow,
         reasons: reasons,
-        latestNews: relevantNews
+        latestNews: relevantNews,
+        contextBlurb: contextBlurb
       };
     }
   });
@@ -413,6 +415,181 @@ function generateCurrencyReasons(symbol, data) {
   return reasons.slice(0, 3);
 }
 
+// Generate short context blurb for currencies
+function generateCurrencyBlurb(symbol, data, newsItem) {
+  const change = data.changePercent;
+  const direction = change > 0.1 ? 'up' : change < -0.1 ? 'down' : 'flat';
+
+  // If we have news, try to extract context from headline
+  if (newsItem && newsItem.headline) {
+    const headline = newsItem.headline.toLowerCase();
+
+    // Check for specific themes in news
+    if (headline.includes('fed') || headline.includes('fomc') || headline.includes('powell')) {
+      return direction === 'up' ? 'Fed hawkish stance supportive' : 'Fed policy weighing on dollar';
+    }
+    if (headline.includes('ecb') || headline.includes('lagarde')) {
+      return direction === 'up' ? 'ECB outlook lifting euro' : 'ECB concerns pressuring euro';
+    }
+    if (headline.includes('boj') || headline.includes('japan')) {
+      return direction === 'up' ? 'BOJ policy supporting yen' : 'Carry trade pressuring yen';
+    }
+    if (headline.includes('inflation') || headline.includes('cpi')) {
+      return 'Inflation data in focus';
+    }
+    if (headline.includes('rate') || headline.includes('hike') || headline.includes('cut')) {
+      return 'Rate expectations driving movement';
+    }
+  }
+
+  // Fallback to price-action based blurbs
+  const blurbs = {
+    'DX': {
+      up: 'Dollar firm on safe-haven demand',
+      down: 'Greenback easing on risk appetite',
+      flat: 'Dollar consolidating near key levels'
+    },
+    '6E': {
+      up: 'Euro supported by ECB stance',
+      down: 'Euro soft on growth concerns',
+      flat: 'EUR/USD range-bound ahead of data'
+    },
+    '6J': {
+      up: 'Yen bid on risk-off flows',
+      down: 'Yen weak as carry trades resume',
+      flat: 'Yen steady awaiting BOJ signals'
+    },
+    '6B': {
+      up: 'Sterling firm on UK data',
+      down: 'Pound pressured by UK outlook',
+      flat: 'Cable consolidating near support'
+    },
+    '6A': {
+      up: 'Aussie rallies on risk-on mood',
+      down: 'AUD soft on China concerns',
+      flat: 'Aussie steady tracking commodities'
+    }
+  };
+
+  return blurbs[symbol]?.[direction] || 'Tracking broader FX sentiment';
+}
+
+// Generate short context blurb for international indices
+function generateIndexBlurb(symbol, data, newsItem) {
+  const change = data.changePercent;
+  const direction = change > 0.2 ? 'up' : change < -0.2 ? 'down' : 'flat';
+
+  // If we have news, try to extract context
+  if (newsItem && newsItem.headline) {
+    const headline = newsItem.headline.toLowerCase();
+
+    if (headline.includes('tech') || headline.includes('chip') || headline.includes('ai')) {
+      return direction === 'up' ? 'Tech rally lifting index' : 'Tech weakness dragging index';
+    }
+    if (headline.includes('bank') || headline.includes('financial')) {
+      return direction === 'up' ? 'Financials leading gains' : 'Bank stocks under pressure';
+    }
+    if (headline.includes('china') || headline.includes('trade')) {
+      return 'China/trade headlines in focus';
+    }
+  }
+
+  const blurbs = {
+    'N225': {
+      up: 'Nikkei rallies on export optimism',
+      down: 'Nikkei soft on yen strength',
+      flat: 'Tokyo stocks mixed in quiet trade'
+    },
+    'DAX': {
+      up: 'DAX gains on industrial strength',
+      down: 'German stocks ease on growth fears',
+      flat: 'DAX consolidating near highs'
+    },
+    'STOXX': {
+      up: 'European stocks rise on risk appetite',
+      down: 'Stoxx 50 pressured by macro concerns',
+      flat: 'Europe mixed ahead of ECB'
+    },
+    'FTSE': {
+      up: 'FTSE lifted by commodity stocks',
+      down: 'UK stocks soft on sterling move',
+      flat: 'London stocks range-bound'
+    }
+  };
+
+  return blurbs[symbol]?.[direction] || 'Tracking global sentiment';
+}
+
+// Generate short context blurb for Mag 7 stocks
+function generateMag7Blurb(symbol, data, newsItem) {
+  const change = data.changePercent;
+  const direction = change > 0.5 ? 'up' : change < -0.5 ? 'down' : 'flat';
+
+  // If we have news, use it
+  if (newsItem && newsItem.headline) {
+    const headline = newsItem.headline.toLowerCase();
+
+    if (headline.includes('ai') || headline.includes('artificial intelligence')) {
+      return direction === 'up' ? 'AI momentum continues' : 'AI hype cooling off';
+    }
+    if (headline.includes('earnings') || headline.includes('revenue') || headline.includes('profit')) {
+      return direction === 'up' ? 'Strong earnings outlook' : 'Earnings concerns weigh';
+    }
+    if (headline.includes('cloud') || headline.includes('aws') || headline.includes('azure')) {
+      return 'Cloud business in focus';
+    }
+    if (headline.includes('iphone') || headline.includes('mac')) {
+      return 'Product cycle expectations';
+    }
+    if (headline.includes('ev') || headline.includes('delivery') || headline.includes('production')) {
+      return 'EV demand outlook in focus';
+    }
+    if (headline.includes('ad') || headline.includes('advertising') || headline.includes('meta')) {
+      return 'Ad revenue trends key';
+    }
+  }
+
+  const blurbs = {
+    'AAPL': {
+      up: 'Services growth driving optimism',
+      down: 'iPhone demand concerns linger',
+      flat: 'Apple steady near all-time highs'
+    },
+    'NVDA': {
+      up: 'AI chip demand remains robust',
+      down: 'Profit-taking after strong run',
+      flat: 'NVDA consolidating gains'
+    },
+    'MSFT': {
+      up: 'Azure & Copilot driving growth',
+      down: 'Cloud competition concerns',
+      flat: 'MSFT steady on enterprise demand'
+    },
+    'GOOGL': {
+      up: 'Search & AI momentum intact',
+      down: 'Regulatory concerns weigh',
+      flat: 'Alphabet steady on ad strength'
+    },
+    'AMZN': {
+      up: 'AWS & retail trends positive',
+      down: 'E-commerce growth slowing',
+      flat: 'Amazon range-bound on mixed signals'
+    },
+    'META': {
+      up: 'Ad rebound & Reels growth',
+      down: 'Metaverse spending concerns',
+      flat: 'Meta steady on engagement trends'
+    },
+    'TSLA': {
+      up: 'EV demand & margin optimism',
+      down: 'Price cuts & competition pressure',
+      flat: 'Tesla awaiting delivery data'
+    }
+  };
+
+  return blurbs[symbol]?.[direction] || 'Tracking tech sector sentiment';
+}
+
 // International indices builder
 function buildInternationalIndices(internationalData) {
   const indices = {};
@@ -423,6 +600,7 @@ function buildInternationalIndices(internationalData) {
     if (data) {
       const esImplication = getESImplication(symbol, data.changePercent);
       const relevantNews = getNewsForInstrument(symbol);
+      const contextBlurb = generateIndexBlurb(symbol, data, relevantNews);
 
       indices[symbol] = {
         name: data.name,
@@ -433,7 +611,8 @@ function buildInternationalIndices(internationalData) {
         sessionStatus: data.sessionStatus || 'UNKNOWN',
         timezone: data.timezone,
         esImplication: esImplication,
-        latestNews: relevantNews
+        latestNews: relevantNews,
+        contextBlurb: contextBlurb
       };
     }
   });
@@ -563,6 +742,7 @@ function buildMag7Data(mag7Data, mag7NewsData) {
       // Get recent news for this stock
       const newsItems = mag7NewsData[symbol] || [];
       const latestNews = newsItems.length > 0 ? newsItems[0] : null;
+      const contextBlurb = generateMag7Blurb(symbol, data, latestNews);
 
       stocks[symbol] = {
         name: data.name,
@@ -575,6 +755,7 @@ function buildMag7Data(mag7Data, mag7NewsData) {
         fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
         fiftyTwoWeekLow: data.fiftyTwoWeekLow,
         trend: data.trend || 'Flat',
+        contextBlurb: contextBlurb,
         // Latest headline for quick reference
         latestNews: latestNews ? {
           headline: truncateHeadline(latestNews.headline, 80),
