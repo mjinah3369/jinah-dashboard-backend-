@@ -722,11 +722,7 @@ const TREASURY_YIELD_SYMBOLS = {
   '^TYX': { name: '30-Year Treasury', symbol: '30Y', duration: '30y' }
 };
 
-// Crypto Symbols for Quick Stats
-const CRYPTO_SYMBOLS = {
-  'BTC-USD': { name: 'Bitcoin', symbol: 'BTC' },
-  'ETH-USD': { name: 'Ethereum', symbol: 'ETH' }
-};
+// Note: CRYPTO_SYMBOLS is already defined at the top of the file with sector info
 
 // Fetch Treasury Yields
 export async function fetchTreasuryYields() {
