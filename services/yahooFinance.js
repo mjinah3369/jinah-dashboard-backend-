@@ -1,15 +1,49 @@
 // Yahoo Finance - Futures Prices (No API key needed)
 // Uses the unofficial Yahoo Finance API with fallback data
 
+// Equity Index Futures
+const EQUITY_INDEX_SYMBOLS = {
+  'ES=F': { name: 'S&P 500 E-mini', symbol: 'ES', sector: 'indices' },
+  'NQ=F': { name: 'Nasdaq 100 E-mini', symbol: 'NQ', sector: 'indices' },
+  'YM=F': { name: 'Dow Jones E-mini', symbol: 'YM', sector: 'indices' },
+  'RTY=F': { name: 'Russell 2000 E-mini', symbol: 'RTY', sector: 'indices' }
+};
+
+// Interest Rate / Bond Futures
+const BOND_SYMBOLS = {
+  'ZT=F': { name: '2-Year T-Note', symbol: 'ZT', sector: 'bonds', duration: 'short' },
+  'ZF=F': { name: '5-Year T-Note', symbol: 'ZF', sector: 'bonds', duration: 'medium' },
+  'ZN=F': { name: '10-Year T-Note', symbol: 'ZN', sector: 'bonds', duration: 'medium-long' },
+  'TN=F': { name: 'Ultra 10-Year T-Note', symbol: 'TN', sector: 'bonds', duration: 'long' },
+  'ZB=F': { name: '30-Year T-Bond', symbol: 'ZB', sector: 'bonds', duration: 'long' }
+};
+
+// Precious Metals Futures
+const METALS_SYMBOLS = {
+  'GC=F': { name: 'Gold', symbol: 'GC', sector: 'metals' },
+  'SI=F': { name: 'Silver', symbol: 'SI', sector: 'metals' },
+  'HG=F': { name: 'Copper', symbol: 'HG', sector: 'metals' }
+};
+
+// Energy Futures
+const ENERGY_SYMBOLS = {
+  'CL=F': { name: 'Crude Oil WTI', symbol: 'CL', sector: 'energy' },
+  'NG=F': { name: 'Natural Gas', symbol: 'NG', sector: 'energy' },
+  'RB=F': { name: 'RBOB Gasoline', symbol: 'RB', sector: 'energy' }
+};
+
+// Volatility
+const VOLATILITY_SYMBOLS = {
+  '^VIX': { name: 'VIX', symbol: 'VIX', sector: 'volatility' }
+};
+
+// Combined for backward compatibility
 const FUTURES_SYMBOLS = {
-  'ES=F': { name: 'S&P 500 E-mini', symbol: 'ES' },
-  'NQ=F': { name: 'Nasdaq 100 E-mini', symbol: 'NQ' },
-  'YM=F': { name: 'Dow Jones E-mini', symbol: 'YM' },
-  'RTY=F': { name: 'Russell 2000 E-mini', symbol: 'RTY' },
-  'CL=F': { name: 'Crude Oil', symbol: 'CL' },
-  'GC=F': { name: 'Gold', symbol: 'GC' },
-  'ZN=F': { name: '10-Year T-Note', symbol: 'ZN' },
-  '^VIX': { name: 'VIX', symbol: 'VIX' }
+  ...EQUITY_INDEX_SYMBOLS,
+  ...BOND_SYMBOLS,
+  ...METALS_SYMBOLS,
+  ...ENERGY_SYMBOLS,
+  ...VOLATILITY_SYMBOLS
 };
 
 // Currency Futures Symbols
@@ -99,7 +133,10 @@ export async function fetchYahooFinanceFutures() {
           high: quote.regularMarketDayHigh || price,
           low: quote.regularMarketDayLow || price,
           volume: quote.regularMarketVolume || 0,
-          marketState: quote.marketState || 'REGULAR'
+          marketState: quote.marketState || 'REGULAR',
+          sector: config.sector || 'other',
+          fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh || 0,
+          fiftyTwoWeekLow: quote.fiftyTwoWeekLow || 0
         };
       }
     });
@@ -126,14 +163,27 @@ export async function fetchYahooFinanceFutures() {
 function getFallbackData() {
   // Generate realistic-looking data based on typical market values
   const baseData = {
-    'ES': { name: 'S&P 500 E-mini', basePrice: 6050, volatility: 0.8 },
-    'NQ': { name: 'Nasdaq 100 E-mini', basePrice: 21500, volatility: 1.2 },
-    'YM': { name: 'Dow Jones E-mini', basePrice: 44200, volatility: 0.6 },
-    'RTY': { name: 'Russell 2000 E-mini', basePrice: 2280, volatility: 1.0 },
-    'CL': { name: 'Crude Oil', basePrice: 73.50, volatility: 1.5 },
-    'GC': { name: 'Gold', basePrice: 2760, volatility: 0.5 },
-    'ZN': { name: '10-Year T-Note', basePrice: 108.50, volatility: 0.3 },
-    'VIX': { name: 'VIX', basePrice: 16.5, volatility: 5.0 }
+    // Equity Indices
+    'ES': { name: 'S&P 500 E-mini', basePrice: 6050, volatility: 0.8, sector: 'indices' },
+    'NQ': { name: 'Nasdaq 100 E-mini', basePrice: 21500, volatility: 1.2, sector: 'indices' },
+    'YM': { name: 'Dow Jones E-mini', basePrice: 44200, volatility: 0.6, sector: 'indices' },
+    'RTY': { name: 'Russell 2000 E-mini', basePrice: 2280, volatility: 1.0, sector: 'indices' },
+    // Bonds / Interest Rates
+    'ZT': { name: '2-Year T-Note', basePrice: 102.50, volatility: 0.15, sector: 'bonds' },
+    'ZF': { name: '5-Year T-Note', basePrice: 106.75, volatility: 0.25, sector: 'bonds' },
+    'ZN': { name: '10-Year T-Note', basePrice: 108.50, volatility: 0.3, sector: 'bonds' },
+    'TN': { name: 'Ultra 10-Year T-Note', basePrice: 115.80, volatility: 0.35, sector: 'bonds' },
+    'ZB': { name: '30-Year T-Bond', basePrice: 118.25, volatility: 0.4, sector: 'bonds' },
+    // Precious Metals
+    'GC': { name: 'Gold', basePrice: 2760, volatility: 0.5, sector: 'metals' },
+    'SI': { name: 'Silver', basePrice: 31.50, volatility: 1.2, sector: 'metals' },
+    'HG': { name: 'Copper', basePrice: 4.15, volatility: 1.0, sector: 'metals' },
+    // Energy
+    'CL': { name: 'Crude Oil WTI', basePrice: 73.50, volatility: 1.5, sector: 'energy' },
+    'NG': { name: 'Natural Gas', basePrice: 2.90, volatility: 3.0, sector: 'energy' },
+    'RB': { name: 'RBOB Gasoline', basePrice: 2.15, volatility: 1.8, sector: 'energy' },
+    // Volatility
+    'VIX': { name: 'VIX', basePrice: 16.5, volatility: 5.0, sector: 'volatility' }
   };
 
   const result = {};
@@ -155,6 +205,7 @@ function getFallbackData() {
       low: parseFloat((price * 0.995).toFixed(2)),
       volume: Math.floor(Math.random() * 500000) + 100000,
       marketState: 'REGULAR',
+      sector: config.sector,
       isFallback: true
     };
   });
@@ -631,4 +682,408 @@ function getMag7FallbackData() {
   });
 
   return result;
+}
+
+// Treasury Yield Symbols for Quick Stats
+const TREASURY_YIELD_SYMBOLS = {
+  '^IRX': { name: '3-Month T-Bill', symbol: '3M', duration: '3m' },
+  '^FVX': { name: '5-Year Treasury', symbol: '5Y', duration: '5y' },
+  '^TNX': { name: '10-Year Treasury', symbol: '10Y', duration: '10y' },
+  '^TYX': { name: '30-Year Treasury', symbol: '30Y', duration: '30y' }
+};
+
+// Crypto Symbols for Quick Stats
+const CRYPTO_SYMBOLS = {
+  'BTC-USD': { name: 'Bitcoin', symbol: 'BTC' },
+  'ETH-USD': { name: 'Ethereum', symbol: 'ETH' }
+};
+
+// Fetch Treasury Yields
+export async function fetchTreasuryYields() {
+  const symbols = Object.keys(TREASURY_YIELD_SYMBOLS).join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      console.error(`Treasury yields API returned status: ${response.status}`);
+      return getTreasuryYieldsFallback();
+    }
+
+    const data = await response.json();
+    const quotes = data.quoteResponse?.result || [];
+
+    if (quotes.length === 0) {
+      return getTreasuryYieldsFallback();
+    }
+
+    const result = {};
+    quotes.forEach(quote => {
+      const config = TREASURY_YIELD_SYMBOLS[quote.symbol];
+      if (config) {
+        result[config.symbol] = {
+          name: config.name,
+          yield: quote.regularMarketPrice || 0,
+          change: quote.regularMarketChange || 0,
+          changePercent: quote.regularMarketChangePercent || 0,
+          previousClose: quote.regularMarketPreviousClose || 0
+        };
+      }
+    });
+
+    // Calculate 2s10s spread (using 5Y as proxy for 2Y if not available)
+    const twoYear = result['5Y']?.yield || 4.21; // Use 5Y as approximation
+    const tenYear = result['10Y']?.yield || 4.52;
+    result.yieldCurve = {
+      spread2s10s: parseFloat((tenYear - twoYear).toFixed(2)),
+      isInverted: tenYear < twoYear,
+      status: tenYear < twoYear ? 'Inverted' : (tenYear - twoYear < 0.25 ? 'Flat' : 'Normal')
+    };
+
+    console.log(`Treasury Yields: fetched ${Object.keys(result).length - 1} yields`);
+    return result;
+
+  } catch (error) {
+    console.error('Treasury yields fetch error:', error.message);
+    return getTreasuryYieldsFallback();
+  }
+}
+
+function getTreasuryYieldsFallback() {
+  return {
+    '3M': { name: '3-Month T-Bill', yield: 4.35, change: 0.02, changePercent: 0.46, previousClose: 4.33 },
+    '5Y': { name: '5-Year Treasury', yield: 4.38, change: 0.03, changePercent: 0.69, previousClose: 4.35 },
+    '10Y': { name: '10-Year Treasury', yield: 4.52, change: 0.04, changePercent: 0.89, previousClose: 4.48 },
+    '30Y': { name: '30-Year Treasury', yield: 4.71, change: 0.02, changePercent: 0.43, previousClose: 4.69 },
+    yieldCurve: {
+      spread2s10s: 0.14,
+      isInverted: false,
+      status: 'Flat'
+    },
+    isFallback: true
+  };
+}
+
+// Fetch Crypto Prices for Quick Stats
+export async function fetchCryptoPrices() {
+  const symbols = Object.keys(CRYPTO_SYMBOLS).join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      return getCryptoFallback();
+    }
+
+    const data = await response.json();
+    const quotes = data.quoteResponse?.result || [];
+
+    if (quotes.length === 0) {
+      return getCryptoFallback();
+    }
+
+    const result = {};
+    quotes.forEach(quote => {
+      const config = CRYPTO_SYMBOLS[quote.symbol];
+      if (config) {
+        result[config.symbol] = {
+          name: config.name,
+          price: quote.regularMarketPrice || 0,
+          change: quote.regularMarketChange || 0,
+          changePercent: quote.regularMarketChangePercent || 0,
+          previousClose: quote.regularMarketPreviousClose || 0
+        };
+      }
+    });
+
+    console.log(`Crypto: fetched ${Object.keys(result).length} prices`);
+    return result;
+
+  } catch (error) {
+    console.error('Crypto fetch error:', error.message);
+    return getCryptoFallback();
+  }
+}
+
+function getCryptoFallback() {
+  return {
+    BTC: { name: 'Bitcoin', price: 102450, change: -1250, changePercent: -1.21, previousClose: 103700 },
+    ETH: { name: 'Ethereum', price: 3180, change: -28, changePercent: -0.87, previousClose: 3208 },
+    isFallback: true
+  };
+}
+
+// Calculate Expectation Meters for ES, GC, CL
+export function calculateExpectationMeters(futuresData, currencyData, newsData) {
+  const vix = futuresData?.VIX?.price || 16;
+  const vixChange = futuresData?.VIX?.changePercent || 0;
+  const znChange = futuresData?.ZN?.changePercent || 0;
+  const dxChange = currencyData?.DX?.changePercent || 0;
+
+  // Analyze news sentiment for each instrument
+  const newsSentiment = analyzeNewsSentiment(newsData);
+
+  return {
+    ES: calculateESExpectation(vix, znChange, dxChange, newsSentiment.ES),
+    GC: calculateGCExpectation(dxChange, znChange, vix, newsSentiment.GC),
+    CL: calculateCLExpectation(dxChange, newsSentiment.CL, newsSentiment.geopolitical)
+  };
+}
+
+function calculateESExpectation(vix, znChange, dxChange, newsSentiment) {
+  let score = 0;
+  const factors = {};
+
+  // VIX Factor (30% weight)
+  if (vix < 14) {
+    factors.VIX = { score: 2, reason: 'Low fear, complacent' };
+    score += 2;
+  } else if (vix <= 18) {
+    factors.VIX = { score: 0, reason: 'Normal volatility' };
+  } else if (vix <= 25) {
+    factors.VIX = { score: -1, reason: 'Elevated fear' };
+    score -= 1;
+  } else {
+    factors.VIX = { score: -2, reason: 'High fear/panic' };
+    score -= 2;
+  }
+
+  // ZN Factor (25% weight) - Rising ZN = falling yields = bullish ES
+  if (znChange > 0.2) {
+    factors.ZN = { score: 2, reason: 'Yields falling' };
+    score += 2;
+  } else if (znChange > 0.1) {
+    factors.ZN = { score: 1, reason: 'Yields easing' };
+    score += 1;
+  } else if (znChange < -0.2) {
+    factors.ZN = { score: -2, reason: 'Yields surging' };
+    score -= 2;
+  } else if (znChange < -0.1) {
+    factors.ZN = { score: -1, reason: 'Yields rising' };
+    score -= 1;
+  } else {
+    factors.ZN = { score: 0, reason: 'Yields stable' };
+  }
+
+  // DX Factor (20% weight) - Falling DX = bullish ES
+  if (dxChange < -0.3) {
+    factors.DX = { score: 1, reason: 'Weak dollar' };
+    score += 1;
+  } else if (dxChange > 0.5) {
+    factors.DX = { score: -2, reason: 'Strong dollar' };
+    score -= 2;
+  } else if (dxChange > 0.2) {
+    factors.DX = { score: -1, reason: 'Firm dollar' };
+    score -= 1;
+  } else {
+    factors.DX = { score: 0, reason: 'Dollar neutral' };
+  }
+
+  // News Factor (25% weight)
+  factors.News = { score: newsSentiment, reason: newsSentiment > 0 ? 'Positive news' : newsSentiment < 0 ? 'Negative news' : 'Neutral news' };
+  score += newsSentiment;
+
+  return buildExpectationResult(score, factors, 'ES');
+}
+
+function calculateGCExpectation(dxChange, znChange, vix, newsSentiment) {
+  let score = 0;
+  const factors = {};
+
+  // DX Factor (35% weight) - Falling DX = bullish GC
+  if (dxChange < -0.5) {
+    factors.DX = { score: 2, reason: 'Weak dollar (bullish gold)' };
+    score += 2;
+  } else if (dxChange < -0.2) {
+    factors.DX = { score: 1, reason: 'Soft dollar' };
+    score += 1;
+  } else if (dxChange > 0.5) {
+    factors.DX = { score: -2, reason: 'Strong dollar (bearish gold)' };
+    score -= 2;
+  } else if (dxChange > 0.2) {
+    factors.DX = { score: -1, reason: 'Firm dollar' };
+    score -= 1;
+  } else {
+    factors.DX = { score: 0, reason: 'Dollar neutral' };
+  }
+
+  // ZN Factor (25% weight) - Rising ZN = falling yields = bullish GC
+  if (znChange > 0.2) {
+    factors.ZN = { score: 2, reason: 'Lower yields (bullish gold)' };
+    score += 2;
+  } else if (znChange > 0.1) {
+    factors.ZN = { score: 1, reason: 'Yields easing' };
+    score += 1;
+  } else if (znChange < -0.2) {
+    factors.ZN = { score: -2, reason: 'Rising yields (bearish gold)' };
+    score -= 2;
+  } else if (znChange < -0.1) {
+    factors.ZN = { score: -1, reason: 'Yields rising' };
+    score -= 1;
+  } else {
+    factors.ZN = { score: 0, reason: 'Yields stable' };
+  }
+
+  // VIX Factor (20% weight) - High VIX = bullish GC (safe haven)
+  if (vix > 25) {
+    factors.VIX = { score: 2, reason: 'Fear = safe haven bid' };
+    score += 2;
+  } else if (vix > 18) {
+    factors.VIX = { score: 1, reason: 'Elevated fear' };
+    score += 1;
+  } else if (vix < 14) {
+    factors.VIX = { score: -1, reason: 'Complacency (less gold demand)' };
+    score -= 1;
+  } else {
+    factors.VIX = { score: 0, reason: 'Normal volatility' };
+  }
+
+  // News Factor (20% weight)
+  factors.News = { score: newsSentiment, reason: newsSentiment > 0 ? 'Positive news' : newsSentiment < 0 ? 'Negative news' : 'Neutral news' };
+  score += newsSentiment;
+
+  return buildExpectationResult(score, factors, 'GC');
+}
+
+function calculateCLExpectation(dxChange, newsSentiment, geopoliticalScore) {
+  let score = 0;
+  const factors = {};
+
+  // Geopolitical Factor (30% weight)
+  if (geopoliticalScore > 1) {
+    factors.Geo = { score: 2, reason: 'High geopolitical tension' };
+    score += 2;
+  } else if (geopoliticalScore > 0) {
+    factors.Geo = { score: 1, reason: 'Moderate tension' };
+    score += 1;
+  } else if (geopoliticalScore < -1) {
+    factors.Geo = { score: -1, reason: 'Calm/resolution' };
+    score -= 1;
+  } else {
+    factors.Geo = { score: 0, reason: 'Neutral geopolitics' };
+  }
+
+  // DX Factor (25% weight) - Falling DX = bullish CL
+  if (dxChange < -0.3) {
+    factors.DX = { score: 1, reason: 'Weak dollar (bullish oil)' };
+    score += 1;
+  } else if (dxChange > 0.5) {
+    factors.DX = { score: -2, reason: 'Strong dollar (bearish oil)' };
+    score -= 2;
+  } else if (dxChange > 0.2) {
+    factors.DX = { score: -1, reason: 'Firm dollar' };
+    score -= 1;
+  } else {
+    factors.DX = { score: 0, reason: 'Dollar neutral' };
+  }
+
+  // Supply News Factor (25% weight)
+  factors.Supply = { score: newsSentiment, reason: newsSentiment > 0 ? 'Supply concerns' : newsSentiment < 0 ? 'Oversupply risk' : 'Supply neutral' };
+  score += newsSentiment;
+
+  // Demand Factor (20% weight) - Based on general economic news
+  factors.Demand = { score: 0, reason: 'Demand stable' };
+
+  return buildExpectationResult(score, factors, 'CL');
+}
+
+function buildExpectationResult(score, factors, instrument) {
+  // Clamp score to -6 to +6
+  score = Math.max(-6, Math.min(6, score));
+
+  let direction, label;
+  if (score >= 4) {
+    direction = 'Strong Bullish';
+    label = 'STRONG BULLISH';
+  } else if (score >= 2) {
+    direction = 'Bullish';
+    label = 'BULLISH';
+  } else if (score >= 1) {
+    direction = 'Slight Bullish';
+    label = 'SLIGHT BULLISH';
+  } else if (score <= -4) {
+    direction = 'Strong Bearish';
+    label = 'STRONG BEARISH';
+  } else if (score <= -2) {
+    direction = 'Bearish';
+    label = 'BEARISH';
+  } else if (score <= -1) {
+    direction = 'Slight Bearish';
+    label = 'SLIGHT BEARISH';
+  } else {
+    direction = 'Neutral';
+    label = 'NEUTRAL';
+  }
+
+  // Calculate confidence (1-10 based on factor agreement)
+  const factorScores = Object.values(factors).map(f => f.score);
+  const avgMagnitude = factorScores.reduce((sum, s) => sum + Math.abs(s), 0) / factorScores.length;
+  const confidence = Math.min(10, Math.max(1, Math.round(avgMagnitude * 3 + 4)));
+
+  return {
+    score,
+    direction,
+    label,
+    confidence,
+    factors
+  };
+}
+
+function analyzeNewsSentiment(newsData) {
+  if (!newsData || !Array.isArray(newsData) || newsData.length === 0) {
+    return { ES: 0, GC: 0, CL: 0, geopolitical: 0 };
+  }
+
+  let esSentiment = 0;
+  let gcSentiment = 0;
+  let clSentiment = 0;
+  let geoScore = 0;
+
+  const highImpactNews = newsData.filter(n => n.impact === 'HIGH');
+
+  highImpactNews.forEach(news => {
+    const headline = (news.headline || '').toLowerCase();
+
+    // ES sentiment
+    if (news.affectedInstruments?.includes('ES')) {
+      if (headline.includes('rally') || headline.includes('surge') || headline.includes('gain')) esSentiment += 1;
+      if (headline.includes('fall') || headline.includes('drop') || headline.includes('concern')) esSentiment -= 1;
+    }
+
+    // GC sentiment
+    if (news.affectedInstruments?.includes('GC') || headline.includes('gold')) {
+      if (headline.includes('safe haven') || headline.includes('inflation')) gcSentiment += 1;
+      if (headline.includes('hawkish') || headline.includes('rate hike')) gcSentiment -= 1;
+    }
+
+    // CL sentiment
+    if (news.affectedInstruments?.includes('CL') || headline.includes('oil') || headline.includes('crude')) {
+      if (headline.includes('opec cut') || headline.includes('supply concern') || headline.includes('disruption')) clSentiment += 1;
+      if (headline.includes('oversupply') || headline.includes('demand weak')) clSentiment -= 1;
+    }
+
+    // Geopolitical score
+    if (news.category === 'Geopolitical' || headline.includes('war') || headline.includes('tension') || headline.includes('sanction') || headline.includes('tariff')) {
+      geoScore += 1;
+    }
+  });
+
+  return {
+    ES: Math.max(-2, Math.min(2, esSentiment)),
+    GC: Math.max(-2, Math.min(2, gcSentiment)),
+    CL: Math.max(-2, Math.min(2, clSentiment)),
+    geopolitical: Math.max(-2, Math.min(2, geoScore))
+  };
 }

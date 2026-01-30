@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks } from './services/yahooFinance.js';
+import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks, fetchTreasuryYields, fetchCryptoPrices, calculateExpectationMeters } from './services/yahooFinance.js';
 import { fetchEconomicCalendar } from './services/alphaVantage.js';
 import { fetchFredData } from './services/fred.js';
 import { fetchPolygonData } from './services/polygon.js';
@@ -48,7 +48,9 @@ app.get('/api/dashboard', async (req, res) => {
       newsData,
       sectorData,
       mag7Data,
-      mag7NewsData
+      mag7NewsData,
+      treasuryYieldsData,
+      cryptoData
     ] = await Promise.allSettled([
       fetchYahooFinanceFutures(),
       fetchEconomicCalendar(),
@@ -59,7 +61,9 @@ app.get('/api/dashboard', async (req, res) => {
       fetchFinnhubNews(),
       fetchSectorETFs(),
       fetchMag7Stocks(),
-      fetchMag7News()
+      fetchMag7News(),
+      fetchTreasuryYields(),
+      fetchCryptoPrices()
     ]);
 
     // Extract results (use empty defaults if failed)
@@ -73,17 +77,22 @@ app.get('/api/dashboard', async (req, res) => {
     const sectors = sectorData.status === 'fulfilled' ? sectorData.value : {};
     const mag7 = mag7Data.status === 'fulfilled' ? mag7Data.value : {};
     const mag7News = mag7NewsData.status === 'fulfilled' ? mag7NewsData.value : {};
+    const treasuryYields = treasuryYieldsData.status === 'fulfilled' ? treasuryYieldsData.value : {};
+    const crypto = cryptoData.status === 'fulfilled' ? cryptoData.value : {};
+
+    // Calculate expectation meters
+    const expectationMeters = calculateExpectationMeters(futures, currencies, news);
 
     // Log any errors
-    const sources = ['Yahoo Finance', 'Alpha Vantage', 'FRED', 'Polygon', 'Currency', 'International', 'Finnhub News', 'Sectors', 'Mag7 Stocks', 'Mag7 News'];
-    [futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData, mag7Data, mag7NewsData].forEach((result, i) => {
+    const sources = ['Yahoo Finance', 'Alpha Vantage', 'FRED', 'Polygon', 'Currency', 'International', 'Finnhub News', 'Sectors', 'Mag7 Stocks', 'Mag7 News', 'Treasury Yields', 'Crypto'];
+    [futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData, mag7Data, mag7NewsData, treasuryYieldsData, cryptoData].forEach((result, i) => {
       if (result.status === 'rejected') {
         console.error(`${sources[i]} error:`, result.reason?.message || result.reason);
       }
     });
 
     // Build the dashboard response
-    const dashboard = buildDashboardResponse(futures, economic, fred, polygon, currencies, international, news, sectors, mag7, mag7News);
+    const dashboard = buildDashboardResponse(futures, economic, fred, polygon, currencies, international, news, sectors, mag7, mag7News, treasuryYields, crypto, expectationMeters);
 
     // Cache the result
     cachedData = dashboard;
