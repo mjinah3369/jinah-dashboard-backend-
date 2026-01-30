@@ -2,6 +2,7 @@
 
 import { calculateBias, calculateDXYStrength } from './yahooFinance.js';
 import { analyzeFredConditions } from './fred.js';
+import { getNewsForInstrument } from './finnhubNews.js';
 
 export function buildDashboardResponse(futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData, mag7Data, mag7NewsData) {
   const now = new Date();
@@ -355,6 +356,8 @@ function buildCurrencyInstruments(currencyData) {
     const data = currencyData[symbol];
     if (data) {
       const reasons = generateCurrencyReasons(symbol, data);
+      const relevantNews = getNewsForInstrument(symbol);
+
       currencies[symbol] = {
         name: data.name,
         price: data.price,
@@ -363,7 +366,8 @@ function buildCurrencyInstruments(currencyData) {
         previousClose: data.previousClose,
         fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
         fiftyTwoWeekLow: data.fiftyTwoWeekLow,
-        reasons: reasons
+        reasons: reasons,
+        latestNews: relevantNews
       };
     }
   });
@@ -418,6 +422,8 @@ function buildInternationalIndices(internationalData) {
     const data = internationalData[symbol];
     if (data) {
       const esImplication = getESImplication(symbol, data.changePercent);
+      const relevantNews = getNewsForInstrument(symbol);
+
       indices[symbol] = {
         name: data.name,
         price: data.price,
@@ -426,7 +432,8 @@ function buildInternationalIndices(internationalData) {
         previousClose: data.previousClose,
         sessionStatus: data.sessionStatus || 'UNKNOWN',
         timezone: data.timezone,
-        esImplication: esImplication
+        esImplication: esImplication,
+        latestNews: relevantNews
       };
     }
   });

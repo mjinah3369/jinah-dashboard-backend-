@@ -25,13 +25,27 @@ const INSTRUMENT_KEYWORDS = {
   'CL': ['oil', 'crude', 'opec', 'energy', 'petroleum', 'barrel'],
   'GC': ['gold', 'precious', 'safe haven', 'bullion'],
   'ZN': ['bond', 'treasury', 'yield', 'fixed income', 'debt'],
-  'DX': ['dollar', 'usd', 'currency', 'forex', 'dxy']
+  'DX': ['dollar', 'usd', 'currency', 'forex', 'dxy', 'greenback'],
+  // Currency Futures
+  '6E': ['euro', 'eur', 'ecb', 'european central bank', 'eurozone', 'lagarde'],
+  '6J': ['yen', 'jpy', 'boj', 'bank of japan', 'japan', 'kuroda', 'ueda'],
+  '6B': ['pound', 'gbp', 'sterling', 'boe', 'bank of england', 'uk economy', 'britain'],
+  '6A': ['aussie', 'aud', 'australian', 'rba', 'reserve bank of australia'],
+  // International Indices
+  'N225': ['nikkei', 'japan stock', 'tokyo stock', 'japanese market', 'topix'],
+  'DAX': ['dax', 'german stock', 'germany market', 'frankfurt', 'deutsche'],
+  'STOXX': ['stoxx', 'euro stoxx', 'european stock', 'europe market'],
+  'FTSE': ['ftse', 'uk stock', 'london stock', 'british market', 'lse']
 };
+
+// Store processed news for filtering by instrument
+let cachedProcessedNews = [];
 
 export async function fetchFinnhubNews() {
   if (!FINNHUB_API_KEY) {
     console.warn('FINNHUB_API_KEY not set, using fallback news data');
-    return getFallbackNews();
+    cachedProcessedNews = getFallbackNews();
+    return cachedProcessedNews;
   }
 
   const url = `https://finnhub.io/api/v1/news?category=general&token=${FINNHUB_API_KEY}`;
@@ -55,11 +69,12 @@ export async function fetchFinnhubNews() {
       return getFallbackNews();
     }
 
-    // Process and categorize news
-    const processedNews = data.slice(0, 10).map(item => processNewsItem(item));
+    // Process and categorize news (get more for filtering)
+    const processedNews = data.slice(0, 25).map(item => processNewsItem(item));
+    cachedProcessedNews = processedNews; // Cache for instrument filtering
 
     console.log(`Finnhub News: fetched ${processedNews.length} articles`);
-    return processedNews;
+    return processedNews.slice(0, 10); // Return top 10 for main feed
 
   } catch (error) {
     console.error('Finnhub fetch error:', error.message);
@@ -212,6 +227,42 @@ function getMag7FallbackNews() {
     'META': [{ headline: 'Meta expands AI features across social platforms', source: 'Market Analysis', url: '#', relativeTime: '3h ago' }],
     'TSLA': [{ headline: 'Tesla production updates in focus ahead of delivery data', source: 'Market Analysis', url: '#', relativeTime: '1h ago' }]
   };
+}
+
+// Get news relevant to a specific instrument by filtering cached news
+export function getNewsForInstrument(instrument) {
+  const keywords = INSTRUMENT_KEYWORDS[instrument];
+  if (!keywords || cachedProcessedNews.length === 0) {
+    return null;
+  }
+
+  // Find news that matches this instrument's keywords
+  for (const newsItem of cachedProcessedNews) {
+    const text = `${newsItem.headline} ${newsItem.summary}`.toLowerCase();
+    if (keywords.some(keyword => text.includes(keyword))) {
+      return {
+        headline: newsItem.headline.length > 100
+          ? newsItem.headline.slice(0, 97) + '...'
+          : newsItem.headline,
+        source: newsItem.source,
+        url: newsItem.url,
+        relativeTime: newsItem.relativeTime
+      };
+    }
+  }
+
+  return null; // No relevant news found
+}
+
+// Get news for multiple instruments at once (more efficient)
+export function getNewsForInstruments(instruments) {
+  const result = {};
+
+  for (const instrument of instruments) {
+    result[instrument] = getNewsForInstrument(instrument);
+  }
+
+  return result;
 }
 
 function getFallbackNews() {
