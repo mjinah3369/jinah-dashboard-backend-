@@ -124,47 +124,145 @@ function calculateMarketBias(instruments, vixLevel, fredData) {
   // Count biases
   let bullishCount = 0;
   let bearishCount = 0;
+  const totalInstruments = Object.keys(instruments).length;
 
   Object.values(instruments).forEach(inst => {
     if (inst.bias === 'Bullish') bullishCount++;
     if (inst.bias === 'Bearish') bearishCount++;
   });
 
-  // Determine sentiment
+  // Build detailed signals array
+  const signals = [];
+  let totalScore = 0;
+
+  // VIX Signal (weight: 25%)
+  let vixSignal = { name: 'VIX', value: vixLevel.toFixed(1), score: 0, interpretation: '' };
+  if (vixLevel > 25) {
+    vixSignal.score = -2;
+    vixSignal.interpretation = 'Extreme fear - RISK-OFF';
+  } else if (vixLevel > 20) {
+    vixSignal.score = -1;
+    vixSignal.interpretation = 'Elevated fear';
+  } else if (vixLevel < 14) {
+    vixSignal.score = 1;
+    vixSignal.interpretation = 'Low fear - complacent';
+  } else {
+    vixSignal.score = 0;
+    vixSignal.interpretation = 'Normal range';
+  }
+  signals.push(vixSignal);
+  totalScore += vixSignal.score * 0.25;
+
+  // Instrument Bias Signal (weight: 30%)
+  const biasDiff = bullishCount - bearishCount;
+  let instrumentSignal = {
+    name: 'Futures',
+    value: `${bullishCount}B/${bearishCount}R`,
+    score: 0,
+    interpretation: ''
+  };
+  if (biasDiff >= 3) {
+    instrumentSignal.score = 2;
+    instrumentSignal.interpretation = `${bullishCount} of ${totalInstruments} bullish`;
+  } else if (biasDiff >= 1) {
+    instrumentSignal.score = 1;
+    instrumentSignal.interpretation = 'Slightly more bullish';
+  } else if (biasDiff <= -3) {
+    instrumentSignal.score = -2;
+    instrumentSignal.interpretation = `${bearishCount} of ${totalInstruments} bearish`;
+  } else if (biasDiff <= -1) {
+    instrumentSignal.score = -1;
+    instrumentSignal.interpretation = 'Slightly more bearish';
+  } else {
+    instrumentSignal.score = 0;
+    instrumentSignal.interpretation = 'Mixed/balanced';
+  }
+  signals.push(instrumentSignal);
+  totalScore += instrumentSignal.score * 0.30;
+
+  // Yield Curve Signal (weight: 20%)
+  const fredConditions = analyzeFredConditions(fredData);
+  let yieldSignal = { name: 'Yield Curve', value: fredConditions.yieldCurve || 'N/A', score: 0, interpretation: '' };
+  if (fredConditions.yieldCurve === 'inverted') {
+    yieldSignal.score = -2;
+    yieldSignal.interpretation = 'Inverted - recession signal';
+  } else if (fredConditions.yieldCurve === 'flat') {
+    yieldSignal.score = -1;
+    yieldSignal.interpretation = 'Flat - caution';
+  } else {
+    yieldSignal.score = 1;
+    yieldSignal.interpretation = 'Normal - healthy';
+  }
+  signals.push(yieldSignal);
+  totalScore += yieldSignal.score * 0.20;
+
+  // Rate Environment Signal (weight: 15%)
+  let rateSignal = { name: 'Fed Policy', value: fredConditions.rateEnvironment || 'N/A', score: 0, interpretation: '' };
+  if (fredConditions.rateEnvironment === 'restrictive') {
+    rateSignal.score = -1;
+    rateSignal.interpretation = 'Restrictive - headwind';
+  } else if (fredConditions.rateEnvironment === 'accommodative') {
+    rateSignal.score = 1;
+    rateSignal.interpretation = 'Accommodative - tailwind';
+  } else {
+    rateSignal.score = 0;
+    rateSignal.interpretation = 'Neutral stance';
+  }
+  signals.push(rateSignal);
+  totalScore += rateSignal.score * 0.15;
+
+  // Equity Index Signal (weight: 10%)
+  const es = instruments['ES'];
+  let equitySignal = { name: 'ES Trend', value: es ? `${es.changePercent > 0 ? '+' : ''}${es.changePercent.toFixed(2)}%` : 'N/A', score: 0, interpretation: '' };
+  if (es) {
+    if (es.changePercent > 0.5) {
+      equitySignal.score = 1;
+      equitySignal.interpretation = 'ES positive momentum';
+    } else if (es.changePercent < -0.5) {
+      equitySignal.score = -1;
+      equitySignal.interpretation = 'ES negative momentum';
+    } else {
+      equitySignal.score = 0;
+      equitySignal.interpretation = 'ES flat/consolidating';
+    }
+  }
+  signals.push(equitySignal);
+  totalScore += equitySignal.score * 0.10;
+
+  // Determine final sentiment based on total weighted score
   let sentiment = 'NEUTRAL';
   let confidence = 5;
 
-  if (vixLevel > 25) {
-    sentiment = 'RISK-OFF';
-    confidence = 8;
-  } else if (vixLevel > 20) {
-    sentiment = 'RISK-OFF';
-    confidence = 7;
-  } else if (vixLevel < 14 && bullishCount > bearishCount) {
+  if (totalScore >= 1.0) {
     sentiment = 'RISK-ON';
-    confidence = 7;
-  } else if (bearishCount > bullishCount + 2) {
-    sentiment = 'RISK-OFF';
-    confidence = 6;
-  } else if (bullishCount > bearishCount + 2) {
+    confidence = Math.min(9, Math.round(5 + totalScore * 2));
+  } else if (totalScore >= 0.3) {
     sentiment = 'RISK-ON';
-    confidence = 6;
+    confidence = Math.round(5 + totalScore * 2);
+  } else if (totalScore <= -1.0) {
+    sentiment = 'RISK-OFF';
+    confidence = Math.min(9, Math.round(5 + Math.abs(totalScore) * 2));
+  } else if (totalScore <= -0.3) {
+    sentiment = 'RISK-OFF';
+    confidence = Math.round(5 + Math.abs(totalScore) * 2);
+  } else {
+    sentiment = 'NEUTRAL';
+    confidence = 5;
   }
 
-  // Generate reason
-  const reasons = [];
-  if (vixLevel > 20) reasons.push(`VIX elevated at ${vixLevel.toFixed(1)}`);
-  if (bearishCount > bullishCount) reasons.push(`${bearishCount} of 7 instruments bearish`);
-  if (bullishCount > bearishCount) reasons.push(`${bullishCount} of 7 instruments bullish`);
-
-  const fredConditions = analyzeFredConditions(fredData);
-  if (fredConditions.yieldCurve === 'inverted') reasons.push('yield curve inverted');
-  if (fredConditions.rateEnvironment === 'restrictive') reasons.push('restrictive rate environment');
+  // Generate summary reason
+  const topSignals = signals
+    .filter(s => s.score !== 0)
+    .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
+    .slice(0, 3)
+    .map(s => s.interpretation);
 
   return {
     sentiment: sentiment,
     confidence: confidence,
-    reason: reasons.join(', ') || 'Mixed market signals'
+    reason: topSignals.join(', ') || 'Mixed market signals',
+    signals: signals,
+    totalScore: parseFloat(totalScore.toFixed(2))
   };
 }
 
@@ -844,6 +942,16 @@ function buildInstrumentsBySector(futuresData, vixLevel, fredData) {
       name: 'Energy',
       symbols: ['CL', 'NG', 'RB'],
       keyDrivers: 'OPEC, geopolitics, inventory data, USD, weather'
+    },
+    agriculture: {
+      name: 'Agriculture',
+      symbols: ['ZS', 'ZC', 'ZW', 'ZM', 'ZL', 'LE', 'HE'],
+      keyDrivers: 'Weather, USDA reports, export demand, planting/harvest'
+    },
+    crypto: {
+      name: 'Cryptocurrency',
+      symbols: ['BTC', 'ETH'],
+      keyDrivers: 'Risk sentiment, regulatory news, institutional adoption, DeFi'
     }
   };
 
@@ -954,6 +1062,23 @@ function generateSectorInsight(sectorKey, instruments, futuresData) {
       if (cl?.changePercent < -1) return 'Crude under pressure on demand concerns';
       if (ng?.changePercent < -2) return 'Natural gas weak on mild weather';
       return 'Energy sector mixed';
+
+    case 'agriculture':
+      const zs = instruments['ZS'];
+      const zc = instruments['ZC'];
+      const zw = instruments['ZW'];
+      if (zs?.changePercent > 1 || zc?.changePercent > 1) return 'Grains rallying on supply concerns';
+      if (zs?.changePercent < -1 && zc?.changePercent < -1) return 'Grains under pressure on favorable weather';
+      if (zw?.changePercent > 2) return 'Wheat surging on geopolitical/supply fears';
+      return 'Agriculture tracking weather and export demand';
+
+    case 'crypto':
+      const btc = instruments['BTC'];
+      const eth = instruments['ETH'];
+      if (btc?.changePercent > 3) return 'Bitcoin rallying, risk-on sentiment';
+      if (btc?.changePercent < -3) return 'Bitcoin selling off, risk aversion';
+      if (eth?.changePercent > btc?.changePercent + 1) return 'ETH outperforming BTC, altcoin strength';
+      return 'Crypto tracking broader risk sentiment';
 
     default:
       return 'Market conditions apply';
@@ -1206,31 +1331,54 @@ function enhanceMacroEvents(events) {
     let countdown = null;
     let dateFormatted = null;
 
-    // Try to parse the time string to create a date
-    const timeMatch = event.time?.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-    if (timeMatch) {
-      eventDate = new Date();
-      let hours = parseInt(timeMatch[1]);
-      const minutes = parseInt(timeMatch[2]);
-      const isPM = timeMatch[3].toUpperCase() === 'PM';
+    // Use the date field if available, otherwise try to parse time
+    if (event.date) {
+      // Event has an actual date field
+      eventDate = new Date(event.date);
 
-      if (isPM && hours !== 12) hours += 12;
-      if (!isPM && hours === 12) hours = 0;
+      // Parse time and add to date
+      const timeMatch = event.time?.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[1]);
+        const minutes = parseInt(timeMatch[2]);
+        const isPM = timeMatch[3].toUpperCase() === 'PM';
 
-      eventDate.setHours(hours, minutes, 0, 0);
+        if (isPM && hours !== 12) hours += 12;
+        if (!isPM && hours === 12) hours = 0;
 
-      // If time has passed today, assume tomorrow
-      if (eventDate < now) {
-        eventDate.setDate(eventDate.getDate() + 1);
+        eventDate.setHours(hours, minutes, 0, 0);
       }
+    } else {
+      // Fallback: Try to parse the time string and assume today/tomorrow
+      const timeMatch = event.time?.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+      if (timeMatch) {
+        eventDate = new Date();
+        let hours = parseInt(timeMatch[1]);
+        const minutes = parseInt(timeMatch[2]);
+        const isPM = timeMatch[3].toUpperCase() === 'PM';
 
-      // Calculate countdown
+        if (isPM && hours !== 12) hours += 12;
+        if (!isPM && hours === 12) hours = 0;
+
+        eventDate.setHours(hours, minutes, 0, 0);
+
+        // If time has passed today, assume tomorrow
+        if (eventDate < now) {
+          eventDate.setDate(eventDate.getDate() + 1);
+        }
+      }
+    }
+
+    // Calculate countdown if we have a valid date
+    if (eventDate) {
       const diff = eventDate - now;
       const days = Math.floor(diff / (1000 * 60 * 60 * 24));
       const hoursLeft = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
       const minutesLeft = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
 
-      if (days > 0) {
+      if (diff < 0) {
+        countdown = 'RELEASED';
+      } else if (days > 0) {
         countdown = `IN ${days}D ${hoursLeft}H ${minutesLeft}M`;
       } else if (hoursLeft > 0) {
         countdown = `IN ${hoursLeft}H ${minutesLeft}M`;

@@ -32,6 +32,23 @@ const ENERGY_SYMBOLS = {
   'RB=F': { name: 'RBOB Gasoline', symbol: 'RB', sector: 'energy' }
 };
 
+// Agriculture Futures
+const AGRICULTURE_SYMBOLS = {
+  'ZS=F': { name: 'Soybeans', symbol: 'ZS', sector: 'agriculture' },
+  'ZC=F': { name: 'Corn', symbol: 'ZC', sector: 'agriculture' },
+  'ZW=F': { name: 'Wheat', symbol: 'ZW', sector: 'agriculture' },
+  'ZM=F': { name: 'Soybean Meal', symbol: 'ZM', sector: 'agriculture' },
+  'ZL=F': { name: 'Soybean Oil', symbol: 'ZL', sector: 'agriculture' },
+  'LE=F': { name: 'Live Cattle', symbol: 'LE', sector: 'agriculture' },
+  'HE=F': { name: 'Lean Hogs', symbol: 'HE', sector: 'agriculture' }
+};
+
+// Cryptocurrency
+const CRYPTO_SYMBOLS = {
+  'BTC-USD': { name: 'Bitcoin', symbol: 'BTC', sector: 'crypto' },
+  'ETH-USD': { name: 'Ethereum', symbol: 'ETH', sector: 'crypto' }
+};
+
 // Volatility
 const VOLATILITY_SYMBOLS = {
   '^VIX': { name: 'VIX', symbol: 'VIX', sector: 'volatility' }
@@ -43,6 +60,8 @@ const FUTURES_SYMBOLS = {
   ...BOND_SYMBOLS,
   ...METALS_SYMBOLS,
   ...ENERGY_SYMBOLS,
+  ...AGRICULTURE_SYMBOLS,
+  ...CRYPTO_SYMBOLS,
   ...VOLATILITY_SYMBOLS
 };
 
@@ -182,6 +201,17 @@ function getFallbackData() {
     'CL': { name: 'Crude Oil WTI', basePrice: 73.50, volatility: 1.5, sector: 'energy' },
     'NG': { name: 'Natural Gas', basePrice: 2.90, volatility: 3.0, sector: 'energy' },
     'RB': { name: 'RBOB Gasoline', basePrice: 2.15, volatility: 1.8, sector: 'energy' },
+    // Agriculture
+    'ZS': { name: 'Soybeans', basePrice: 1020, volatility: 1.2, sector: 'agriculture' },
+    'ZC': { name: 'Corn', basePrice: 450, volatility: 1.5, sector: 'agriculture' },
+    'ZW': { name: 'Wheat', basePrice: 540, volatility: 2.0, sector: 'agriculture' },
+    'ZM': { name: 'Soybean Meal', basePrice: 295, volatility: 1.3, sector: 'agriculture' },
+    'ZL': { name: 'Soybean Oil', basePrice: 42.5, volatility: 1.4, sector: 'agriculture' },
+    'LE': { name: 'Live Cattle', basePrice: 195, volatility: 0.8, sector: 'agriculture' },
+    'HE': { name: 'Lean Hogs', basePrice: 82, volatility: 1.5, sector: 'agriculture' },
+    // Cryptocurrency
+    'BTC': { name: 'Bitcoin', basePrice: 102500, volatility: 3.0, sector: 'crypto' },
+    'ETH': { name: 'Ethereum', basePrice: 3200, volatility: 4.0, sector: 'crypto' },
     // Volatility
     'VIX': { name: 'VIX', basePrice: 16.5, volatility: 5.0, sector: 'volatility' }
   };
