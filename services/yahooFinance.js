@@ -876,17 +876,20 @@ function calculateESExpectation(vix, znChange, dxChange, newsSentiment) {
   let score = 0;
   const factors = {};
 
-  // VIX Factor (30% weight)
-  if (vix < 14) {
+  // VIX Factor (30% weight) - Aligned with VIX card thresholds
+  if (vix < 12) {
     factors.VIX = { score: 2, reason: 'Low fear, complacent' };
     score += 2;
-  } else if (vix <= 18) {
+  } else if (vix < 16) {
     factors.VIX = { score: 0, reason: 'Normal volatility' };
-  } else if (vix <= 25) {
+  } else if (vix < 20) {
     factors.VIX = { score: -1, reason: 'Elevated fear' };
     score -= 1;
+  } else if (vix < 30) {
+    factors.VIX = { score: -2, reason: 'High fear' };
+    score -= 2;
   } else {
-    factors.VIX = { score: -2, reason: 'High fear/panic' };
+    factors.VIX = { score: -2, reason: 'Extreme fear/panic' };
     score -= 2;
   }
 
@@ -966,14 +969,17 @@ function calculateGCExpectation(dxChange, znChange, vix, newsSentiment) {
     factors.ZN = { score: 0, reason: 'Yields stable' };
   }
 
-  // VIX Factor (20% weight) - High VIX = bullish GC (safe haven)
-  if (vix > 25) {
-    factors.VIX = { score: 2, reason: 'Fear = safe haven bid' };
+  // VIX Factor (20% weight) - High VIX = bullish GC (safe haven) - Aligned with VIX card
+  if (vix >= 30) {
+    factors.VIX = { score: 2, reason: 'Extreme fear = safe haven bid' };
     score += 2;
-  } else if (vix > 18) {
+  } else if (vix >= 20) {
+    factors.VIX = { score: 2, reason: 'High fear = safe haven bid' };
+    score += 2;
+  } else if (vix >= 16) {
     factors.VIX = { score: 1, reason: 'Elevated fear' };
     score += 1;
-  } else if (vix < 14) {
+  } else if (vix < 12) {
     factors.VIX = { score: -1, reason: 'Complacency (less gold demand)' };
     score -= 1;
   } else {

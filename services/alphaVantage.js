@@ -4,59 +4,12 @@
 
 const API_KEY = process.env.ALPHA_VANTAGE_API_KEY || 'demo';
 
-// Fetch top market news and sentiment
+// Fetch economic calendar - uses our built-in calendar with real dates
+// Alpha Vantage doesn't provide a proper economic calendar API
 export async function fetchEconomicCalendar() {
-  try {
-    // Alpha Vantage News Sentiment API
-    const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=SPY,QQQ,DIA&apikey=${API_KEY}`;
-
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      throw new Error(`Alpha Vantage API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    // Check for API limit message
-    if (data.Note || data.Information) {
-      console.warn('Alpha Vantage rate limit or info:', data.Note || data.Information);
-      return getDefaultEconomicEvents();
-    }
-
-    // Extract relevant news for macro events
-    const feed = data.feed || [];
-    const macroEvents = [];
-
-    // Convert news to event format (top 5 relevant items)
-    feed.slice(0, 5).forEach(item => {
-      const sentiment = item.overall_sentiment_score || 0;
-      let importance = 'LOW';
-      if (Math.abs(sentiment) > 0.3) importance = 'HIGH';
-      else if (Math.abs(sentiment) > 0.15) importance = 'MEDIUM';
-
-      macroEvents.push({
-        time: new Date(item.time_published).toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: 'America/New_York'
-        }) + ' ET',
-        event: item.title?.substring(0, 50) + '...' || 'Market News',
-        importance: importance,
-        previous: '-',
-        forecast: '-',
-        actual: sentiment > 0 ? 'Positive' : sentiment < 0 ? 'Negative' : 'Neutral',
-        source: item.source || 'News'
-      });
-    });
-
-    return macroEvents.length > 0 ? macroEvents : getDefaultEconomicEvents();
-
-  } catch (error) {
-    console.error('Alpha Vantage fetch error:', error.message);
-    return getDefaultEconomicEvents();
-  }
+  // Always return our curated economic calendar with proper dates
+  // This includes NFP, CPI, FOMC, and other scheduled high-impact events
+  return getDefaultEconomicEvents();
 }
 
 // Fetch earnings calendar
