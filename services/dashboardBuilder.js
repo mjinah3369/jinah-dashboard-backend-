@@ -59,6 +59,18 @@ export function buildDashboardResponse(futuresData, economicData, fredData, poly
   // Enhance news with "Why It Matters" analysis
   const enhancedNews = enhanceNewsWithAnalysis(newsData || []);
 
+  // Generate AI summaries for all instruments
+  const instrumentSummaries = generateInstrumentSummaries(
+    futuresData,
+    currencyData,
+    internationalData,
+    mag7Data,
+    vixLevel,
+    dxyStrength,
+    expectationMeters,
+    instrumentsBySector
+  );
+
   return {
     date: now.toISOString().split('T')[0],
     lastUpdate: now.toISOString(),
@@ -79,7 +91,8 @@ export function buildDashboardResponse(futuresData, economicData, fredData, poly
     expectationMeters: expectationMeters || {},
     quickStats: quickStats,
     fedWatch: fedWatch,
-    ticker: ticker
+    ticker: ticker,
+    instrumentSummaries: instrumentSummaries
   };
 }
 
@@ -1524,4 +1537,726 @@ function determineImpactDirection(news, symbol) {
   if (hasBullish && !hasBearish) return '▲ Bullish';
   if (hasBearish && !hasBullish) return '▼ Bearish';
   return '━ Mixed';
+}
+
+// Generate AI-style summaries for all instruments
+function generateInstrumentSummaries(futuresData, currencyData, internationalData, mag7Data, vixLevel, dxyStrength, expectationMeters, instrumentsBySector) {
+  const summaries = {};
+
+  // Helper to format change with sign
+  const formatChange = (change) => {
+    if (change === undefined || change === null) return '0.00%';
+    return change > 0 ? `+${change.toFixed(2)}%` : `${change.toFixed(2)}%`;
+  };
+
+  // Helper to get trend descriptor
+  const getTrend = (change) => {
+    if (change > 1.5) return 'surging';
+    if (change > 0.5) return 'higher';
+    if (change > 0.1) return 'slightly higher';
+    if (change < -1.5) return 'plunging';
+    if (change < -0.5) return 'lower';
+    if (change < -0.1) return 'slightly lower';
+    return 'flat';
+  };
+
+  // VIX interpretation for context
+  const vixContext = vixLevel < 12 ? 'low volatility (complacent)' :
+                     vixLevel < 16 ? 'normal volatility' :
+                     vixLevel < 20 ? 'elevated volatility' :
+                     vixLevel < 30 ? 'high volatility' : 'extreme volatility';
+
+  // Dollar context
+  const dxyContext = dxyStrength?.level === 'Strong' ? 'a firm dollar' :
+                     dxyStrength?.level === 'Weak' ? 'dollar weakness' : 'neutral dollar';
+
+  // ============================================
+  // EQUITY INDEX FUTURES
+  // ============================================
+
+  // ES - S&P 500 E-mini
+  if (futuresData?.ES) {
+    const data = futuresData.ES;
+    const meter = expectationMeters?.ES;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `ES is trading ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+
+    if (meter?.factors) {
+      const vixFactor = meter.factors.VIX;
+      const znFactor = meter.factors.ZN;
+      if (vixFactor?.score < 0) {
+        summary += `${vixFactor.reason} is creating headwinds. `;
+      } else if (vixFactor?.score > 0) {
+        summary += `${vixFactor.reason} is providing tailwinds. `;
+      }
+      if (znFactor?.score !== 0) {
+        summary += `Bond market: ${znFactor.reason}. `;
+      }
+    }
+
+    summary += `Overall market sentiment: ${meter?.label || 'Mixed'}.`;
+
+    summaries.ES = {
+      symbol: 'ES',
+      name: 'S&P 500 E-mini',
+      sector: 'indices',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: meter?.direction || 'Neutral'
+    };
+  }
+
+  // NQ - Nasdaq 100 E-mini
+  if (futuresData?.NQ) {
+    const data = futuresData.NQ;
+    const trend = getTrend(data.changePercent);
+    const esMeter = expectationMeters?.ES;
+
+    let summary = `NQ is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `Tech-heavy index ${data.changePercent > 0 ? 'benefiting from' : 'pressured by'} current risk sentiment. `;
+
+    if (vixLevel > 18) {
+      summary += `Elevated VIX at ${vixLevel.toFixed(1)} suggests caution on growth stocks.`;
+    } else if (vixLevel < 14) {
+      summary += `Low VIX supports risk appetite for tech names.`;
+    } else {
+      summary += `Normal volatility environment for tech speculation.`;
+    }
+
+    summaries.NQ = {
+      symbol: 'NQ',
+      name: 'Nasdaq 100 E-mini',
+      sector: 'indices',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // YM - Dow Jones E-mini
+  if (futuresData?.YM) {
+    const data = futuresData.YM;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `YM is ${trend} at ${data.price?.toFixed(0)} (${formatChange(data.changePercent)}). `;
+    summary += `Blue-chip stocks ${data.changePercent > 0 ? 'showing defensive strength' : 'reflecting broader market pressure'}. `;
+    summary += `Value/cyclical rotation ${data.changePercent > (futuresData?.NQ?.changePercent || 0) ? 'favoring' : 'against'} industrials.`;
+
+    summaries.YM = {
+      symbol: 'YM',
+      name: 'Dow Jones E-mini',
+      sector: 'indices',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // RTY - Russell 2000 E-mini
+  if (futuresData?.RTY) {
+    const data = futuresData.RTY;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `RTY is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `Small caps are rate-sensitive; ${vixLevel > 18 ? 'elevated fear weighing on risk appetite' : 'current conditions support small cap speculation'}. `;
+    summary += `${dxyContext === 'a firm dollar' ? 'Strong dollar headwind for domestic-focused companies.' : 'Dollar conditions neutral for small caps.'}`;
+
+    summaries.RTY = {
+      symbol: 'RTY',
+      name: 'Russell 2000 E-mini',
+      sector: 'indices',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // PRECIOUS METALS
+  // ============================================
+
+  // GC - Gold
+  if (futuresData?.GC) {
+    const data = futuresData.GC;
+    const meter = expectationMeters?.GC;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Gold is ${trend} at $${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+
+    if (meter?.factors) {
+      const dxFactor = meter.factors.DX;
+      const vixFactor = meter.factors.VIX;
+      if (dxFactor?.score < 0) {
+        summary += `${dxFactor.reason} creating headwinds. `;
+      } else if (dxFactor?.score > 0) {
+        summary += `${dxFactor.reason} providing support. `;
+      }
+      if (vixLevel > 20) {
+        summary += `Safe-haven demand elevated amid ${vixContext}.`;
+      }
+    } else {
+      summary += `${dxyContext === 'a firm dollar' ? 'Dollar strength capping upside.' : dxyContext === 'dollar weakness' ? 'Dollar weakness supporting prices.' : 'Dollar neutral for gold.'}`;
+    }
+
+    summaries.GC = {
+      symbol: 'GC',
+      name: 'Gold',
+      sector: 'metals',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: meter?.direction || (data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral')
+    };
+  }
+
+  // SI - Silver
+  if (futuresData?.SI) {
+    const data = futuresData.SI;
+    const gcData = futuresData?.GC;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Silver is ${trend} at $${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+
+    if (gcData) {
+      const goldSilverRatio = gcData.price / data.price;
+      summary += `Gold/Silver ratio at ${goldSilverRatio.toFixed(1)} (${goldSilverRatio > 80 ? 'elevated - risk-off' : goldSilverRatio < 70 ? 'low - risk-on' : 'normal range'}). `;
+    }
+    summary += `Industrial demand component ${data.changePercent > gcData?.changePercent ? 'outperforming' : 'underperforming'} gold.`;
+
+    summaries.SI = {
+      symbol: 'SI',
+      name: 'Silver',
+      sector: 'metals',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // HG - Copper
+  if (futuresData?.HG) {
+    const data = futuresData.HG;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Copper is ${trend} at $${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `Dr. Copper ${data.changePercent > 0 ? 'signaling economic optimism' : data.changePercent < -0.5 ? 'warning of demand concerns' : 'reflecting mixed economic signals'}. `;
+    summary += `China demand outlook and green energy transition remain key drivers.`;
+
+    summaries.HG = {
+      symbol: 'HG',
+      name: 'Copper',
+      sector: 'metals',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // ENERGY
+  // ============================================
+
+  // CL - Crude Oil
+  if (futuresData?.CL) {
+    const data = futuresData.CL;
+    const meter = expectationMeters?.CL;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Crude oil is ${trend} at $${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+
+    if (meter?.factors) {
+      const supplyFactor = meter.factors.Supply;
+      const geoFactor = meter.factors.Geo;
+      if (supplyFactor) {
+        summary += `Supply: ${supplyFactor.reason}. `;
+      }
+      if (geoFactor?.score !== 0) {
+        summary += `Geopolitical: ${geoFactor.reason}. `;
+      }
+    } else {
+      summary += `${data.changePercent > 0 ? 'Supply concerns and geopolitical risk supporting prices.' : 'Demand concerns weighing on sentiment.'} `;
+    }
+    summary += `OPEC+ policy and inventory data in focus.`;
+
+    summaries.CL = {
+      symbol: 'CL',
+      name: 'Crude Oil',
+      sector: 'energy',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: meter?.direction || (data.changePercent > 0.3 ? 'Bullish' : data.changePercent < -0.3 ? 'Bearish' : 'Neutral')
+    };
+  }
+
+  // NG - Natural Gas
+  if (futuresData?.NG) {
+    const data = futuresData.NG;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Natural gas is ${trend} at $${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 2 ? 'Weather-driven demand or supply disruptions lifting prices.' : data.changePercent < -2 ? 'Mild weather or ample storage pressuring prices.' : 'Seasonal patterns and weather forecasts guiding direction.'} `;
+    summary += `Storage levels and heating demand key catalysts.`;
+
+    summaries.NG = {
+      symbol: 'NG',
+      name: 'Natural Gas',
+      sector: 'energy',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // RB - RBOB Gasoline
+  if (futuresData?.RB) {
+    const data = futuresData.RB;
+    const clData = futuresData?.CL;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `RBOB gasoline is ${trend} at $${data.price?.toFixed(4)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > (clData?.changePercent || 0) + 0.5 ? 'Outperforming crude on refinery margins.' : 'Tracking crude oil movements.'} `;
+    summary += `Seasonal demand patterns and refinery utilization in focus.`;
+
+    summaries.RB = {
+      symbol: 'RB',
+      name: 'RBOB Gasoline',
+      sector: 'energy',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // BONDS / INTEREST RATES
+  // ============================================
+
+  // ZN - 10-Year Treasury Note
+  if (futuresData?.ZN) {
+    const data = futuresData.ZN;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `10-Year Treasury is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 0 ? 'Yields falling as prices rise - flight to quality or dovish Fed bets.' : data.changePercent < 0 ? 'Yields rising as prices fall - inflation concerns or hawkish Fed.' : 'Yields stable awaiting economic data.'} `;
+    summary += `Fed policy expectations and inflation data driving direction.`;
+
+    summaries.ZN = {
+      symbol: 'ZN',
+      name: '10-Year Treasury',
+      sector: 'bonds',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.1 ? 'Bullish (yields down)' : data.changePercent < -0.1 ? 'Bearish (yields up)' : 'Neutral'
+    };
+  }
+
+  // ZB - 30-Year Treasury Bond
+  if (futuresData?.ZB) {
+    const data = futuresData.ZB;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `30-Year Treasury is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `Long duration bonds ${data.changePercent > 0 ? 'benefiting from rate cut expectations' : 'pressured by inflation concerns'}. `;
+    summary += `Most sensitive to long-term inflation and growth outlook.`;
+
+    summaries.ZB = {
+      symbol: 'ZB',
+      name: '30-Year Treasury',
+      sector: 'bonds',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.1 ? 'Bullish' : data.changePercent < -0.1 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ZT - 2-Year Treasury Note
+  if (futuresData?.ZT) {
+    const data = futuresData.ZT;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `2-Year Treasury is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `Short-end most sensitive to near-term Fed policy. `;
+    summary += `${data.changePercent > 0 ? 'Rally suggests markets pricing in Fed cuts.' : data.changePercent < 0 ? 'Selloff reflects hawkish Fed repricing.' : 'Consolidating near current Fed rate expectations.'}`;
+
+    summaries.ZT = {
+      symbol: 'ZT',
+      name: '2-Year Treasury',
+      sector: 'bonds',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.05 ? 'Bullish' : data.changePercent < -0.05 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ZF - 5-Year Treasury Note
+  if (futuresData?.ZF) {
+    const data = futuresData.ZF;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `5-Year Treasury is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `Belly of the curve balances near-term Fed and long-term growth views. `;
+    summary += `Key benchmark for mortgage rates and corporate borrowing.`;
+
+    summaries.ZF = {
+      symbol: 'ZF',
+      name: '5-Year Treasury',
+      sector: 'bonds',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.05 ? 'Bullish' : data.changePercent < -0.05 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // TN - Ultra 10-Year
+  if (futuresData?.TN) {
+    const data = futuresData.TN;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Ultra 10-Year is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `Higher duration amplifies moves in intermediate rates. `;
+    summary += `Tracking 10-year yields and Fed terminal rate expectations.`;
+
+    summaries.TN = {
+      symbol: 'TN',
+      name: 'Ultra 10-Year',
+      sector: 'bonds',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.05 ? 'Bullish' : data.changePercent < -0.05 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // AGRICULTURE
+  // ============================================
+
+  // ZS - Soybeans
+  if (futuresData?.ZS) {
+    const data = futuresData.ZS;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Soybeans are ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 1 ? 'Weather concerns or strong export demand lifting prices.' : data.changePercent < -1 ? 'Favorable conditions or weak demand pressuring beans.' : 'Awaiting USDA reports and export data.'} `;
+    summary += `China demand and South American crop conditions key drivers.`;
+
+    summaries.ZS = {
+      symbol: 'ZS',
+      name: 'Soybeans',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ZC - Corn
+  if (futuresData?.ZC) {
+    const data = futuresData.ZC;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Corn is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 1 ? 'Ethanol demand or weather concerns supporting prices.' : data.changePercent < -1 ? 'Large supply or weak demand weighing on corn.' : 'Trading on weather forecasts and ethanol margins.'} `;
+    summary += `US crop conditions and export sales in focus.`;
+
+    summaries.ZC = {
+      symbol: 'ZC',
+      name: 'Corn',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ZW - Wheat
+  if (futuresData?.ZW) {
+    const data = futuresData.ZW;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Wheat is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 2 ? 'Black Sea tensions or weather concerns driving prices higher.' : data.changePercent < -2 ? 'Ample global supplies pressuring wheat.' : 'Geopolitical risks and global production estimates in focus.'} `;
+    summary += `Russia/Ukraine exports and US winter wheat conditions key catalysts.`;
+
+    summaries.ZW = {
+      symbol: 'ZW',
+      name: 'Wheat',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ZM - Soybean Meal
+  if (futuresData?.ZM) {
+    const data = futuresData.ZM;
+    const zsData = futuresData?.ZS;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Soybean meal is ${trend} at ${data.price?.toFixed(1)} (${formatChange(data.changePercent)}). `;
+    summary += `Feed demand ${data.changePercent > 0 ? 'supporting crush margins' : 'under pressure'}. `;
+    summary += `${zsData ? (data.changePercent > zsData.changePercent ? 'Outperforming beans on strong meal demand.' : 'Lagging beans, oil demand leading crush.') : 'Tracking soybean complex movements.'}`;
+
+    summaries.ZM = {
+      symbol: 'ZM',
+      name: 'Soybean Meal',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ZL - Soybean Oil
+  if (futuresData?.ZL) {
+    const data = futuresData.ZL;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Soybean oil is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `Biodiesel demand and vegetable oil markets driving direction. `;
+    summary += `${data.changePercent > 1 ? 'Renewable fuel demand supporting prices.' : 'Competing oils and crush pace in focus.'}`;
+
+    summaries.ZL = {
+      symbol: 'ZL',
+      name: 'Soybean Oil',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // LE - Live Cattle
+  if (futuresData?.LE) {
+    const data = futuresData.LE;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Live cattle is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 1 ? 'Tight supplies and strong beef demand lifting prices.' : data.changePercent < -1 ? 'Seasonal pressure or demand concerns weighing.' : 'Cash cattle trade and packer margins guiding futures.'} `;
+    summary += `Herd rebuilding cycle and feed costs key factors.`;
+
+    summaries.LE = {
+      symbol: 'LE',
+      name: 'Live Cattle',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // HE - Lean Hogs
+  if (futuresData?.HE) {
+    const data = futuresData.HE;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Lean hogs is ${trend} at ${data.price?.toFixed(3)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 1.5 ? 'Strong pork demand or tighter supplies driving gains.' : data.changePercent < -1.5 ? 'Seasonal weakness or export concerns weighing.' : 'Pork cutout values and slaughter pace in focus.'} `;
+    summary += `China exports and domestic demand key catalysts.`;
+
+    summaries.HE = {
+      symbol: 'HE',
+      name: 'Lean Hogs',
+      sector: 'agriculture',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.5 ? 'Bullish' : data.changePercent < -0.5 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // CRYPTOCURRENCY
+  // ============================================
+
+  // BTC - Bitcoin
+  if (futuresData?.BTC) {
+    const data = futuresData.BTC;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Bitcoin is ${trend} at $${data.price?.toLocaleString()} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 3 ? 'Risk-on sentiment and institutional flows driving rally.' : data.changePercent < -3 ? 'Risk aversion and profit-taking pressuring prices.' : 'Consolidating as market assesses macro conditions.'} `;
+    summary += `${vixLevel > 20 ? 'Elevated VIX suggests crypto may face volatility spillover.' : 'ETF flows and regulatory news key catalysts.'}`;
+
+    summaries.BTC = {
+      symbol: 'BTC',
+      name: 'Bitcoin',
+      sector: 'crypto',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 1 ? 'Bullish' : data.changePercent < -1 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ETH - Ethereum
+  if (futuresData?.ETH) {
+    const data = futuresData.ETH;
+    const btcData = futuresData?.BTC;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Ethereum is ${trend} at $${data.price?.toLocaleString()} (${formatChange(data.changePercent)}). `;
+    summary += `${btcData ? (data.changePercent > btcData.changePercent + 1 ? 'Outperforming Bitcoin on altcoin strength.' : data.changePercent < btcData.changePercent - 1 ? 'Lagging Bitcoin in risk-off rotation.' : 'Moving in tandem with Bitcoin.') : 'DeFi activity and staking yields in focus.'} `;
+    summary += `Network upgrades and institutional adoption key drivers.`;
+
+    summaries.ETH = {
+      symbol: 'ETH',
+      name: 'Ethereum',
+      sector: 'crypto',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 1 ? 'Bullish' : data.changePercent < -1 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // CURRENCIES
+  // ============================================
+
+  // DX - Dollar Index
+  if (currencyData?.DX) {
+    const data = currencyData.DX;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Dollar Index is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 0.3 ? 'Dollar strength creating headwinds for commodities and EM.' : data.changePercent < -0.3 ? 'Dollar weakness providing tailwinds for risk assets.' : 'Consolidating near key levels.'} `;
+    summary += `Fed policy divergence and US exceptionalism narrative in focus.`;
+
+    summaries.DX = {
+      symbol: 'DX',
+      name: 'Dollar Index',
+      sector: 'currencies',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.2 ? 'Bullish' : data.changePercent < -0.2 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // 6E - Euro
+  if (currencyData?.['6E']) {
+    const data = currencyData['6E'];
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Euro is ${trend} at ${data.price?.toFixed(4)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 0.3 ? 'ECB hawkishness or USD weakness supporting euro.' : data.changePercent < -0.3 ? 'Growth concerns or ECB dovishness weighing.' : 'EUR/USD range-bound ahead of central bank signals.'} `;
+    summary += `Fed-ECB policy divergence driving directional bias.`;
+
+    summaries['6E'] = {
+      symbol: '6E',
+      name: 'Euro FX',
+      sector: 'currencies',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.2 ? 'Bullish' : data.changePercent < -0.2 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // 6J - Japanese Yen
+  if (currencyData?.['6J']) {
+    const data = currencyData['6J'];
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Japanese Yen is ${trend} at ${data.price?.toFixed(6)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 0.5 ? 'Yen strengthening on safe-haven flows or BOJ policy shift signals.' : data.changePercent < -0.5 ? 'Yen weakness as carry trades persist - BOJ remains dovish.' : 'USD/JPY consolidating near intervention watch levels.'} `;
+    summary += `BOJ policy normalization and intervention risk key factors.`;
+
+    summaries['6J'] = {
+      symbol: '6J',
+      name: 'Japanese Yen',
+      sector: 'currencies',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.2 ? 'Bullish' : data.changePercent < -0.2 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // 6B - British Pound
+  if (currencyData?.['6B']) {
+    const data = currencyData['6B'];
+    const trend = getTrend(data.changePercent);
+
+    let summary = `British Pound is ${trend} at ${data.price?.toFixed(4)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 0.3 ? 'Sterling firm on BOE outlook or UK data.' : data.changePercent < -0.3 ? 'Pound pressured by UK growth concerns.' : 'Cable consolidating near key support/resistance.'} `;
+    summary += `BOE rate path and UK inflation data in focus.`;
+
+    summaries['6B'] = {
+      symbol: '6B',
+      name: 'British Pound',
+      sector: 'currencies',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.2 ? 'Bullish' : data.changePercent < -0.2 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // 6A - Australian Dollar
+  if (currencyData?.['6A']) {
+    const data = currencyData['6A'];
+    const trend = getTrend(data.changePercent);
+
+    let summary = `Aussie Dollar is ${trend} at ${data.price?.toFixed(4)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.changePercent > 0.5 ? 'Risk-on mood and commodity strength supporting AUD.' : data.changePercent < -0.5 ? 'China concerns or risk-off weighing on commodity currency.' : 'AUD tracking broader risk sentiment and commodity prices.'} `;
+    summary += `China data and iron ore prices key drivers.`;
+
+    summaries['6A'] = {
+      symbol: '6A',
+      name: 'Australian Dollar',
+      sector: 'currencies',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 0.2 ? 'Bullish' : data.changePercent < -0.2 ? 'Bearish' : 'Neutral'
+    };
+  }
+
+  // ============================================
+  // VIX
+  // ============================================
+
+  if (futuresData?.VIX) {
+    const data = futuresData.VIX;
+    const trend = getTrend(data.changePercent);
+
+    let summary = `VIX is ${trend} at ${data.price?.toFixed(2)} (${formatChange(data.changePercent)}). `;
+    summary += `${data.price < 12 ? 'Extreme complacency - potential for volatility spike.' : data.price < 16 ? 'Normal volatility regime - standard hedging levels.' : data.price < 20 ? 'Elevated fear - increased put protection demand.' : data.price < 30 ? 'High fear - significant hedging activity, caution warranted.' : 'Extreme fear/panic - crisis-level volatility, cash is king.'} `;
+    summary += `${data.changePercent > 5 ? 'Sharp VIX spike suggests equity downside acceleration.' : data.changePercent < -5 ? 'VIX crush suggests market stabilization.' : 'Monitor for breakout from current range.'}`;
+
+    summaries.VIX = {
+      symbol: 'VIX',
+      name: 'Volatility Index',
+      sector: 'volatility',
+      price: data.price,
+      change: data.changePercent,
+      summary: summary,
+      sentiment: data.changePercent > 5 ? 'Risk-Off' : data.changePercent < -5 ? 'Risk-On' : 'Neutral'
+    };
+  }
+
+  return summaries;
 }
