@@ -3,7 +3,7 @@
 import { calculateBias, calculateDXYStrength } from './yahooFinance.js';
 import { analyzeFredConditions } from './fred.js';
 
-export function buildDashboardResponse(futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData) {
+export function buildDashboardResponse(futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData, mag7Data, mag7NewsData) {
   const now = new Date();
   const vixLevel = futuresData?.VIX?.price || 15;
 
@@ -18,6 +18,9 @@ export function buildDashboardResponse(futuresData, economicData, fredData, poly
 
   // Build sector data
   const sectors = buildSectorData(sectorData || {});
+
+  // Build Magnificent Seven data
+  const magnificentSeven = buildMag7Data(mag7Data || {}, mag7NewsData || {});
 
   // Determine overall market bias
   const marketBias = calculateMarketBias(instruments, vixLevel, fredData);
@@ -48,6 +51,7 @@ export function buildDashboardResponse(futuresData, economicData, fredData, poly
     dxyStrength: dxyStrength,
     internationalIndices: internationalIndices,
     sectors: sectors,
+    magnificentSeven: magnificentSeven,
     volatility: volatility,
     news: newsData || [],
     narrative: narrative,
@@ -539,4 +543,72 @@ function buildVolatilityData(vixData) {
     riskLevel: riskLevel,
     description: description
   };
+}
+
+// Magnificent Seven data builder
+function buildMag7Data(mag7Data, mag7NewsData) {
+  const stocks = {};
+  const stockOrder = ['AAPL', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA'];
+
+  stockOrder.forEach(symbol => {
+    const data = mag7Data[symbol];
+    if (data) {
+      // Get recent news for this stock
+      const newsItems = mag7NewsData[symbol] || [];
+      const latestNews = newsItems.length > 0 ? newsItems[0] : null;
+
+      stocks[symbol] = {
+        name: data.name,
+        description: data.description,
+        price: data.price,
+        change: data.change,
+        changePercent: data.changePercent,
+        previousClose: data.previousClose,
+        marketCap: data.marketCapFormatted || 'N/A',
+        fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
+        fiftyTwoWeekLow: data.fiftyTwoWeekLow,
+        trend: data.trend || 'Flat',
+        // Latest headline for quick reference
+        latestNews: latestNews ? {
+          headline: truncateHeadline(latestNews.headline, 80),
+          source: latestNews.source,
+          url: latestNews.url,
+          relativeTime: latestNews.relativeTime
+        } : null
+      };
+    }
+  });
+
+  // Calculate overall Mag 7 sentiment
+  const stockValues = Object.values(stocks);
+  const avgChange = stockValues.length > 0
+    ? stockValues.reduce((sum, s) => sum + s.changePercent, 0) / stockValues.length
+    : 0;
+
+  let overallTrend = 'Mixed';
+  if (avgChange > 0.5) overallTrend = 'Bullish';
+  else if (avgChange > 0.2) overallTrend = 'Slightly Bullish';
+  else if (avgChange < -0.5) overallTrend = 'Bearish';
+  else if (avgChange < -0.2) overallTrend = 'Slightly Bearish';
+
+  // Identify leader and laggard
+  const sorted = stockValues.sort((a, b) => b.changePercent - a.changePercent);
+  const leader = sorted.length > 0 ? sorted[0].name : null;
+  const laggard = sorted.length > 0 ? sorted[sorted.length - 1].name : null;
+
+  return {
+    stocks: stocks,
+    summary: {
+      overallTrend: overallTrend,
+      avgChangePercent: parseFloat(avgChange.toFixed(2)),
+      leader: leader,
+      laggard: laggard
+    }
+  };
+}
+
+function truncateHeadline(headline, maxLength) {
+  if (!headline) return '';
+  if (headline.length <= maxLength) return headline;
+  return headline.slice(0, maxLength - 3) + '...';
 }

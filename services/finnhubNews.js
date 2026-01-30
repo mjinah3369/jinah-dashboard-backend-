@@ -143,6 +143,77 @@ function getRelativeTime(timestamp) {
   return `${days}d ago`;
 }
 
+// Fetch company-specific news for Magnificent Seven stocks
+export async function fetchMag7News() {
+  if (!FINNHUB_API_KEY) {
+    console.warn('FINNHUB_API_KEY not set, using fallback Mag7 news data');
+    return getMag7FallbackNews();
+  }
+
+  const mag7Symbols = ['AAPL', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA'];
+  const result = {};
+
+  // Get date range (last 7 days)
+  const toDate = new Date().toISOString().split('T')[0];
+  const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  try {
+    // Fetch news for each symbol (limited to avoid rate limits)
+    // We'll fetch 3 at a time with small delay
+    for (let i = 0; i < mag7Symbols.length; i++) {
+      const symbol = mag7Symbols[i];
+      const url = `https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${fromDate}&to=${toDate}&token=${FINNHUB_API_KEY}`;
+
+      try {
+        const response = await fetch(url, {
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          // Get only the 2 most recent headlines (keep it short)
+          const recentNews = Array.isArray(data) ? data.slice(0, 2) : [];
+          result[symbol] = recentNews.map(item => ({
+            headline: item.headline || '',
+            source: item.source || 'Unknown',
+            url: item.url || '#',
+            relativeTime: getRelativeTime(item.datetime ? item.datetime * 1000 : Date.now())
+          }));
+        } else {
+          result[symbol] = [];
+        }
+      } catch (err) {
+        console.error(`Error fetching news for ${symbol}:`, err.message);
+        result[symbol] = [];
+      }
+
+      // Small delay to avoid rate limiting (60 calls/min = 1 per second max)
+      if (i < mag7Symbols.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+    }
+
+    console.log(`Mag7 News: fetched news for ${Object.keys(result).length} stocks`);
+    return result;
+
+  } catch (error) {
+    console.error('Mag7 News fetch error:', error.message);
+    return getMag7FallbackNews();
+  }
+}
+
+function getMag7FallbackNews() {
+  return {
+    'AAPL': [{ headline: 'Apple continues AI integration across product line', source: 'Market Analysis', url: '#', relativeTime: '2h ago' }],
+    'NVDA': [{ headline: 'NVIDIA demand remains strong amid AI infrastructure buildout', source: 'Market Analysis', url: '#', relativeTime: '3h ago' }],
+    'MSFT': [{ headline: 'Microsoft Azure growth drives cloud revenue gains', source: 'Market Analysis', url: '#', relativeTime: '4h ago' }],
+    'GOOGL': [{ headline: 'Alphabet focuses on AI search enhancements', source: 'Market Analysis', url: '#', relativeTime: '2h ago' }],
+    'AMZN': [{ headline: 'Amazon AWS maintains market share in cloud computing', source: 'Market Analysis', url: '#', relativeTime: '5h ago' }],
+    'META': [{ headline: 'Meta expands AI features across social platforms', source: 'Market Analysis', url: '#', relativeTime: '3h ago' }],
+    'TSLA': [{ headline: 'Tesla production updates in focus ahead of delivery data', source: 'Market Analysis', url: '#', relativeTime: '1h ago' }]
+  };
+}
+
 function getFallbackNews() {
   // Generate contextually relevant mock news
   const now = new Date();

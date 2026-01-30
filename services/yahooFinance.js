@@ -40,6 +40,17 @@ const SECTOR_SYMBOLS = {
   'XLU': { name: 'Utilities', symbol: 'XLU' }
 };
 
+// Magnificent Seven Stocks
+const MAG7_SYMBOLS = {
+  'AAPL': { name: 'Apple', symbol: 'AAPL', description: 'iPhones, Mac, Services' },
+  'NVDA': { name: 'NVIDIA', symbol: 'NVDA', description: 'AI Chips, GPUs, Data Centers' },
+  'MSFT': { name: 'Microsoft', symbol: 'MSFT', description: 'Windows, Azure, Office 365' },
+  'GOOGL': { name: 'Alphabet', symbol: 'GOOGL', description: 'Search, YouTube, Google Cloud' },
+  'AMZN': { name: 'Amazon', symbol: 'AMZN', description: 'E-commerce, AWS Cloud' },
+  'META': { name: 'Meta', symbol: 'META', description: 'Facebook, Instagram, WhatsApp' },
+  'TSLA': { name: 'Tesla', symbol: 'TSLA', description: 'EVs, Energy, AI/Robotics' }
+};
+
 export async function fetchYahooFinanceFutures() {
   const symbols = Object.keys(FUTURES_SYMBOLS).join(',');
   const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
@@ -494,4 +505,130 @@ export function calculateDXYStrength(dxChangePercent) {
   if (dxChangePercent <= -0.5) return { level: 'Weak', implication: 'Supportive for commodities & EM' };
   if (dxChangePercent <= -0.2) return { level: 'Soft', implication: 'Mild tailwind for risk assets' };
   return { level: 'Neutral', implication: 'No significant currency impact' };
+}
+
+// Fetch Magnificent Seven Stocks
+export async function fetchMag7Stocks() {
+  const symbols = Object.keys(MAG7_SYMBOLS).join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      console.error(`Mag7 API returned status: ${response.status}`);
+      return getMag7FallbackData();
+    }
+
+    const data = await response.json();
+    const quotes = data.quoteResponse?.result || [];
+
+    if (quotes.length === 0) {
+      console.warn('Yahoo Finance returned no Mag7 quotes, using fallback data');
+      return getMag7FallbackData();
+    }
+
+    const result = {};
+
+    quotes.forEach(quote => {
+      const config = MAG7_SYMBOLS[quote.symbol];
+      if (config) {
+        const changePercent = quote.regularMarketChangePercent || 0;
+
+        // Determine trend status
+        let trend = 'Flat';
+        if (changePercent > 1) trend = 'Strong Rally';
+        else if (changePercent > 0.3) trend = 'Up';
+        else if (changePercent < -1) trend = 'Sharp Drop';
+        else if (changePercent < -0.3) trend = 'Down';
+
+        result[config.symbol] = {
+          name: config.name,
+          description: config.description,
+          price: quote.regularMarketPrice || 0,
+          change: quote.regularMarketChange || 0,
+          changePercent: changePercent,
+          previousClose: quote.regularMarketPreviousClose || 0,
+          marketCap: quote.marketCap || 0,
+          marketCapFormatted: formatMarketCap(quote.marketCap),
+          fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh || 0,
+          fiftyTwoWeekLow: quote.fiftyTwoWeekLow || 0,
+          trend: trend,
+          marketState: quote.marketState || 'REGULAR'
+        };
+      }
+    });
+
+    // Fill in missing with fallback
+    const fallback = getMag7FallbackData();
+    Object.keys(fallback).forEach(symbol => {
+      if (!result[symbol]) {
+        result[symbol] = fallback[symbol];
+      }
+    });
+
+    console.log(`Mag7 Stocks: fetched ${Object.keys(result).length} stocks`);
+    return result;
+
+  } catch (error) {
+    console.error('Mag7 fetch error:', error.message);
+    return getMag7FallbackData();
+  }
+}
+
+function formatMarketCap(marketCap) {
+  if (!marketCap) return 'N/A';
+  if (marketCap >= 1e12) return `$${(marketCap / 1e12).toFixed(2)}T`;
+  if (marketCap >= 1e9) return `$${(marketCap / 1e9).toFixed(2)}B`;
+  if (marketCap >= 1e6) return `$${(marketCap / 1e6).toFixed(2)}M`;
+  return `$${marketCap.toLocaleString()}`;
+}
+
+function getMag7FallbackData() {
+  const baseData = {
+    'AAPL': { name: 'Apple', description: 'iPhones, Mac, Services', basePrice: 230, marketCap: 3.78e12, volatility: 1.2 },
+    'NVDA': { name: 'NVIDIA', description: 'AI Chips, GPUs, Data Centers', basePrice: 140, marketCap: 3.5e12, volatility: 2.5 },
+    'MSFT': { name: 'Microsoft', description: 'Windows, Azure, Office 365', basePrice: 420, marketCap: 3.59e12, volatility: 1.0 },
+    'GOOGL': { name: 'Alphabet', description: 'Search, YouTube, Google Cloud', basePrice: 195, marketCap: 2.5e12, volatility: 1.5 },
+    'AMZN': { name: 'Amazon', description: 'E-commerce, AWS Cloud', basePrice: 225, marketCap: 2.47e12, volatility: 1.8 },
+    'META': { name: 'Meta', description: 'Facebook, Instagram, WhatsApp', basePrice: 610, marketCap: 1.5e12, volatility: 2.0 },
+    'TSLA': { name: 'Tesla', description: 'EVs, Energy, AI/Robotics', basePrice: 410, marketCap: 1.3e12, volatility: 3.5 }
+  };
+
+  const result = {};
+  Object.entries(baseData).forEach(([symbol, config]) => {
+    const randomFactor = (Math.random() - 0.5) * 2 * config.volatility;
+    const changePercent = randomFactor;
+    const change = config.basePrice * (changePercent / 100);
+    const price = config.basePrice + change;
+
+    let trend = 'Flat';
+    if (changePercent > 1) trend = 'Strong Rally';
+    else if (changePercent > 0.3) trend = 'Up';
+    else if (changePercent < -1) trend = 'Sharp Drop';
+    else if (changePercent < -0.3) trend = 'Down';
+
+    result[symbol] = {
+      name: config.name,
+      description: config.description,
+      price: parseFloat(price.toFixed(2)),
+      change: parseFloat(change.toFixed(2)),
+      changePercent: parseFloat(changePercent.toFixed(2)),
+      previousClose: config.basePrice,
+      marketCap: config.marketCap,
+      marketCapFormatted: formatMarketCap(config.marketCap),
+      fiftyTwoWeekHigh: parseFloat((config.basePrice * 1.35).toFixed(2)),
+      fiftyTwoWeekLow: parseFloat((config.basePrice * 0.65).toFixed(2)),
+      trend: trend,
+      marketState: 'REGULAR',
+      isFallback: true
+    };
+  });
+
+  return result;
 }
