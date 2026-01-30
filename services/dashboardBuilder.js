@@ -1,26 +1,41 @@
 // Dashboard Builder - Combines all API data into final response
 
-import { calculateBias } from './yahooFinance.js';
+import { calculateBias, calculateDXYStrength } from './yahooFinance.js';
 import { analyzeFredConditions } from './fred.js';
 
-export function buildDashboardResponse(futuresData, economicData, fredData, polygonData) {
+export function buildDashboardResponse(futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData) {
   const now = new Date();
   const vixLevel = futuresData?.VIX?.price || 15;
 
   // Build instruments object with bias analysis
   const instruments = buildInstruments(futuresData, vixLevel, fredData);
 
+  // Build currency instruments
+  const currencies = buildCurrencyInstruments(currencyData || {});
+
+  // Build international indices
+  const internationalIndices = buildInternationalIndices(internationalData || {});
+
+  // Build sector data
+  const sectors = buildSectorData(sectorData || {});
+
   // Determine overall market bias
   const marketBias = calculateMarketBias(instruments, vixLevel, fredData);
 
+  // Calculate DXY strength
+  const dxyStrength = currencyData?.DX ? calculateDXYStrength(currencyData.DX.changePercent) : { level: 'Neutral', implication: 'No currency data' };
+
   // Generate narrative
-  const narrative = generateNarrative(instruments, marketBias, economicData, fredData, vixLevel);
+  const narrative = generateNarrative(instruments, marketBias, economicData, fredData, vixLevel, currencies, internationalIndices);
 
   // Generate risk notes
   const riskNotes = generateRiskNotes(economicData, marketBias, vixLevel);
 
   // Get earnings (mock for now since Alpha Vantage earnings needs separate call)
   const earnings = generateEarningsFromContext(now);
+
+  // Build VIX/Volatility data
+  const volatility = buildVolatilityData(futuresData?.VIX);
 
   return {
     date: now.toISOString().split('T')[0],
@@ -29,6 +44,12 @@ export function buildDashboardResponse(futuresData, economicData, fredData, poly
     earnings: earnings,
     marketBias: marketBias,
     instruments: instruments,
+    currencies: currencies,
+    dxyStrength: dxyStrength,
+    internationalIndices: internationalIndices,
+    sectors: sectors,
+    volatility: volatility,
+    news: newsData || [],
     narrative: narrative,
     riskNotes: riskNotes
   };
@@ -119,7 +140,7 @@ function calculateMarketBias(instruments, vixLevel, fredData) {
   };
 }
 
-function generateNarrative(instruments, marketBias, economicData, fredData, vixLevel) {
+function generateNarrative(instruments, marketBias, economicData, fredData, vixLevel, currencies, internationalIndices) {
   const parts = [];
 
   // Market sentiment opening
@@ -138,6 +159,12 @@ function generateNarrative(instruments, marketBias, economicData, fredData, vixL
     parts.push(`Volatility remains subdued with VIX at ${vixLevel.toFixed(1)}, suggesting complacency.`);
   }
 
+  // International indices commentary
+  if (internationalIndices?.globalSentiment && internationalIndices.globalSentiment !== 'Neutral') {
+    const sentiment = internationalIndices.globalSentiment === 'Risk-On' ? 'positive' : 'negative';
+    parts.push(`Global markets are showing ${sentiment} momentum.`);
+  }
+
   // Equity index commentary
   const es = instruments['ES'];
   const nq = instruments['NQ'];
@@ -146,6 +173,16 @@ function generateNarrative(instruments, marketBias, economicData, fredData, vixL
       parts.push(`Equity futures are under pressure with ES down ${Math.abs(es.changePercent).toFixed(2)}% and NQ down ${Math.abs(nq.changePercent).toFixed(2)}%.`);
     } else if (es.changePercent > 0.5 && nq.changePercent > 0.5) {
       parts.push(`Equity futures are rallying with ES up ${es.changePercent.toFixed(2)}% and NQ up ${nq.changePercent.toFixed(2)}%.`);
+    }
+  }
+
+  // Dollar commentary
+  const dx = currencies?.DX;
+  if (dx) {
+    if (dx.changePercent > 0.3) {
+      parts.push(`The Dollar Index is firming, up ${dx.changePercent.toFixed(2)}%, creating headwinds for commodities.`);
+    } else if (dx.changePercent < -0.3) {
+      parts.push(`Dollar weakness (DXY down ${Math.abs(dx.changePercent).toFixed(2)}%) is providing a tailwind for risk assets.`);
     }
   }
 
@@ -303,4 +340,203 @@ function generateZNReasons(data, bias, fredConditions) {
   if (data.changePercent < 0) reasons.push('Yields rising on growth optimism');
 
   return reasons.slice(0, 3);
+}
+
+// Currency instruments builder
+function buildCurrencyInstruments(currencyData) {
+  const currencies = {};
+  const currencyOrder = ['DX', '6E', '6J', '6B', '6A'];
+
+  currencyOrder.forEach(symbol => {
+    const data = currencyData[symbol];
+    if (data) {
+      const reasons = generateCurrencyReasons(symbol, data);
+      currencies[symbol] = {
+        name: data.name,
+        price: data.price,
+        change: data.change,
+        changePercent: data.changePercent,
+        previousClose: data.previousClose,
+        fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
+        fiftyTwoWeekLow: data.fiftyTwoWeekLow,
+        reasons: reasons
+      };
+    }
+  });
+
+  return currencies;
+}
+
+function generateCurrencyReasons(symbol, data) {
+  const reasons = [];
+
+  switch (symbol) {
+    case 'DX':
+      if (data.changePercent > 0.3) reasons.push('Dollar strength on risk-off flows');
+      if (data.changePercent < -0.3) reasons.push('Dollar weakness boosting risk assets');
+      reasons.push('Fed policy expectations driving movement');
+      if (data.changePercent > 0) reasons.push('Headwind for commodities');
+      else reasons.push('Tailwind for commodities');
+      break;
+    case '6E':
+      if (data.changePercent > 0.3) reasons.push('Euro strength on ECB outlook');
+      if (data.changePercent < -0.3) reasons.push('Euro weakness on growth concerns');
+      reasons.push('ECB-Fed policy divergence in focus');
+      break;
+    case '6J':
+      if (data.changePercent > 0.3) reasons.push('Yen strength - risk-off signal');
+      if (data.changePercent < -0.3) reasons.push('Yen weakness - carry trade active');
+      reasons.push('BOJ policy stance key driver');
+      break;
+    case '6B':
+      if (data.changePercent > 0.3) reasons.push('Sterling strength on BOE outlook');
+      if (data.changePercent < -0.3) reasons.push('Sterling weakness on UK concerns');
+      reasons.push('UK economic data in focus');
+      break;
+    case '6A':
+      if (data.changePercent > 0.3) reasons.push('Aussie strength - risk-on signal');
+      if (data.changePercent < -0.3) reasons.push('Aussie weakness - China concerns');
+      reasons.push('Commodity currency tracking risk sentiment');
+      break;
+    default:
+      reasons.push('Currency market conditions');
+  }
+
+  return reasons.slice(0, 3);
+}
+
+// International indices builder
+function buildInternationalIndices(internationalData) {
+  const indices = {};
+  const indexOrder = ['N225', 'DAX', 'STOXX', 'FTSE'];
+
+  indexOrder.forEach(symbol => {
+    const data = internationalData[symbol];
+    if (data) {
+      const esImplication = getESImplication(symbol, data.changePercent);
+      indices[symbol] = {
+        name: data.name,
+        price: data.price,
+        change: data.change,
+        changePercent: data.changePercent,
+        previousClose: data.previousClose,
+        sessionStatus: data.sessionStatus || 'UNKNOWN',
+        timezone: data.timezone,
+        esImplication: esImplication
+      };
+    }
+  });
+
+  // Calculate global risk summary
+  const liveIndices = Object.values(indices).filter(i => i.sessionStatus === 'LIVE');
+  let globalSentiment = 'Neutral';
+  if (liveIndices.length > 0) {
+    const avgChange = liveIndices.reduce((sum, i) => sum + i.changePercent, 0) / liveIndices.length;
+    if (avgChange > 0.3) globalSentiment = 'Risk-On';
+    else if (avgChange < -0.3) globalSentiment = 'Risk-Off';
+  }
+
+  return {
+    indices: indices,
+    globalSentiment: globalSentiment
+  };
+}
+
+function getESImplication(symbol, changePercent) {
+  const direction = changePercent > 0 ? 'positive' : changePercent < 0 ? 'negative' : 'flat';
+
+  switch (symbol) {
+    case 'N225':
+      if (Math.abs(changePercent) < 0.3) return 'Nikkei flat - neutral for ES overnight';
+      return changePercent > 0
+        ? 'Nikkei strength suggests positive Asia session tone'
+        : 'Nikkei weakness suggests cautious Asia session';
+    case 'DAX':
+      if (Math.abs(changePercent) < 0.3) return 'DAX flat - neutral European tone';
+      return changePercent > 0
+        ? 'DAX strength supports European risk appetite'
+        : 'DAX weakness signals European caution';
+    case 'STOXX':
+      if (Math.abs(changePercent) < 0.3) return 'Euro Stoxx flat - mixed European sentiment';
+      return changePercent > 0
+        ? 'Broad European strength supports global risk'
+        : 'Broad European weakness weighs on sentiment';
+    case 'FTSE':
+      if (Math.abs(changePercent) < 0.3) return 'FTSE flat - UK sentiment neutral';
+      return changePercent > 0
+        ? 'FTSE strength adds to global bid'
+        : 'FTSE weakness reflects UK/global concerns';
+    default:
+      return `${direction} tone`;
+  }
+}
+
+// Sector data builder
+function buildSectorData(sectorData) {
+  const sectors = {};
+  const sectorOrder = ['XLK', 'XLF', 'XLE', 'XLY', 'XLP', 'XLV', 'XLU'];
+
+  sectorOrder.forEach(symbol => {
+    const data = sectorData[symbol];
+    if (data) {
+      sectors[symbol] = {
+        name: data.name,
+        price: data.price,
+        change: data.change,
+        changePercent: data.changePercent,
+        isLeader: data.isLeader || false,
+        isLaggard: data.isLaggard || false
+      };
+    }
+  });
+
+  return sectors;
+}
+
+// Volatility data builder
+function buildVolatilityData(vixData) {
+  if (!vixData) {
+    return {
+      level: 15,
+      change: 0,
+      changePercent: 0,
+      interpretation: 'Normal',
+      riskLevel: 'MODERATE',
+      description: 'VIX data unavailable'
+    };
+  }
+
+  const level = vixData.price;
+  let interpretation, riskLevel, description;
+
+  if (level < 12) {
+    interpretation = 'Low';
+    riskLevel = 'LOW';
+    description = 'Complacency zone - markets calm, potential for surprise volatility';
+  } else if (level < 16) {
+    interpretation = 'Normal';
+    riskLevel = 'MODERATE';
+    description = 'Normal volatility - typical market conditions';
+  } else if (level < 20) {
+    interpretation = 'Elevated';
+    riskLevel = 'ELEVATED';
+    description = 'Elevated fear - increased hedging activity';
+  } else if (level < 30) {
+    interpretation = 'High';
+    riskLevel = 'HIGH';
+    description = 'High fear - significant market stress';
+  } else {
+    interpretation = 'Extreme';
+    riskLevel = 'EXTREME';
+    description = 'Extreme fear - crisis-level volatility';
+  }
+
+  return {
+    level: level,
+    change: vixData.change,
+    changePercent: vixData.changePercent,
+    interpretation: interpretation,
+    riskLevel: riskLevel,
+    description: description
+  };
 }
