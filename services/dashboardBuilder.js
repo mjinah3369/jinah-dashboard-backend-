@@ -523,71 +523,69 @@ function generateIndexBlurb(symbol, data, newsItem) {
 // Generate short context blurb for Mag 7 stocks
 function generateMag7Blurb(symbol, data, newsItem) {
   const change = data.changePercent;
-  const direction = change > 0.5 ? 'up' : change < -0.5 ? 'down' : 'flat';
 
-  // If we have news, use it
-  if (newsItem && newsItem.headline) {
-    const headline = newsItem.headline.toLowerCase();
+  // More granular direction detection
+  let direction;
+  if (change > 1.5) direction = 'strong_up';
+  else if (change > 0.3) direction = 'up';
+  else if (change < -1.5) direction = 'strong_down';
+  else if (change < -0.3) direction = 'down';
+  else direction = 'flat';
 
-    if (headline.includes('ai') || headline.includes('artificial intelligence')) {
-      return direction === 'up' ? 'AI momentum continues' : 'AI hype cooling off';
-    }
-    if (headline.includes('earnings') || headline.includes('revenue') || headline.includes('profit')) {
-      return direction === 'up' ? 'Strong earnings outlook' : 'Earnings concerns weigh';
-    }
-    if (headline.includes('cloud') || headline.includes('aws') || headline.includes('azure')) {
-      return 'Cloud business in focus';
-    }
-    if (headline.includes('iphone') || headline.includes('mac')) {
-      return 'Product cycle expectations';
-    }
-    if (headline.includes('ev') || headline.includes('delivery') || headline.includes('production')) {
-      return 'EV demand outlook in focus';
-    }
-    if (headline.includes('ad') || headline.includes('advertising') || headline.includes('meta')) {
-      return 'Ad revenue trends key';
-    }
-  }
-
+  // Stock-specific blurbs based on price action (more accurate)
   const blurbs = {
     'AAPL': {
-      up: 'Services growth driving optimism',
-      down: 'iPhone demand concerns linger',
-      flat: 'Apple steady near all-time highs'
+      strong_up: 'Apple rallying on strong demand',
+      up: 'iPhone & Services momentum',
+      down: 'Taking a breather today',
+      strong_down: 'Selling pressure on Apple',
+      flat: 'Apple consolidating'
     },
     'NVDA': {
-      up: 'AI chip demand remains robust',
-      down: 'Profit-taking after strong run',
+      strong_up: 'AI chip demand surging',
+      up: 'Data center growth continues',
+      down: 'Pullback after recent gains',
+      strong_down: 'Broad tech weakness hits NVDA',
       flat: 'NVDA consolidating gains'
     },
     'MSFT': {
-      up: 'Azure & Copilot driving growth',
-      down: 'Cloud competition concerns',
-      flat: 'MSFT steady on enterprise demand'
+      strong_up: 'Azure & AI driving gains',
+      up: 'Cloud strength continues',
+      down: 'Modest pullback today',
+      strong_down: 'Tech rotation weighing',
+      flat: 'MSFT holding steady'
     },
     'GOOGL': {
-      up: 'Search & AI momentum intact',
-      down: 'Regulatory concerns weigh',
-      flat: 'Alphabet steady on ad strength'
+      strong_up: 'Search & Cloud boosting shares',
+      up: 'Ad revenue trends positive',
+      down: 'Mild profit-taking',
+      strong_down: 'Regulatory headlines in focus',
+      flat: 'Alphabet range-bound'
     },
     'AMZN': {
-      up: 'AWS & retail trends positive',
-      down: 'E-commerce growth slowing',
-      flat: 'Amazon range-bound on mixed signals'
+      strong_up: 'AWS & retail firing on all cylinders',
+      up: 'E-commerce trends supportive',
+      down: 'Slight pullback today',
+      strong_down: 'Consumer spending concerns',
+      flat: 'Amazon trading sideways'
     },
     'META': {
-      up: 'Ad rebound & Reels growth',
-      down: 'Metaverse spending concerns',
-      flat: 'Meta steady on engagement trends'
+      strong_up: 'Ad rebound driving rally',
+      up: 'Engagement metrics strong',
+      down: 'Minor weakness today',
+      strong_down: 'Social media sector under pressure',
+      flat: 'Meta holding support'
     },
     'TSLA': {
-      up: 'EV demand & margin optimism',
-      down: 'Price cuts & competition pressure',
-      flat: 'Tesla awaiting delivery data'
+      strong_up: 'EV demand optimism rising',
+      up: 'Delivery expectations improving',
+      down: 'Margin concerns linger',
+      strong_down: 'EV competition pressuring',
+      flat: 'Tesla awaiting catalysts'
     }
   };
 
-  return blurbs[symbol]?.[direction] || 'Tracking tech sector sentiment';
+  return blurbs[symbol]?.[direction] || 'Tracking market sentiment';
 }
 
 // International indices builder
