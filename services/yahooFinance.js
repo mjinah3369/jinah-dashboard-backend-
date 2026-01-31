@@ -105,77 +105,75 @@ const MAG7_SYMBOLS = {
 };
 
 export async function fetchYahooFinanceFutures() {
-  const symbols = Object.keys(FUTURES_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  // Use v8 chart API instead of v7 quote API (v7 is now blocked by Yahoo)
+  const symbols = Object.keys(FUTURES_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = FUTURES_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      console.error(`Yahoo Finance API returned status: ${response.status}`);
-      return getFallbackData();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      console.warn('Yahoo Finance returned no quotes, using fallback data');
-      return getFallbackData();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
 
-    quotes.forEach(quote => {
-      const config = FUTURES_SYMBOLS[quote.symbol];
-      if (config) {
-        const price = quote.regularMarketPrice || 0;
-        const change = quote.regularMarketChange || 0;
-        const changePercent = quote.regularMarketChangePercent || 0;
-        const prevClose = quote.regularMarketPreviousClose || price;
-
-        result[config.symbol] = {
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
-          price: price,
-          change: change,
-          changePercent: changePercent,
-          previousClose: prevClose,
-          high: quote.regularMarketDayHigh || price,
-          low: quote.regularMarketDayLow || price,
-          volume: quote.regularMarketVolume || 0,
-          marketState: quote.marketState || 'REGULAR',
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2)),
+          high: meta.regularMarketDayHigh || price,
+          low: meta.regularMarketDayLow || price,
+          volume: meta.regularMarketVolume || 0,
+          marketState: 'REGULAR',
           sector: config.sector || 'other',
-          fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh || 0,
-          fiftyTwoWeekLow: quote.fiftyTwoWeekLow || 0
-        };
-      }
-    });
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || 0,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow || 0
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
 
-    // If we got some data but not all, fill in missing with fallback
-    const fallback = getFallbackData();
-    Object.keys(fallback).forEach(symbol => {
-      if (!result[symbol]) {
-        result[symbol] = fallback[symbol];
-      }
-    });
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-    console.log(`Yahoo Finance: fetched ${Object.keys(result).length} instruments`);
-    return result;
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
 
-  } catch (error) {
-    console.error('Yahoo Finance fetch error:', error.message);
-    console.log('Using fallback data instead');
-    return getFallbackData();
-  }
+  // Fill in missing with fallback
+  const fallback = getFallbackData();
+  Object.keys(fallback).forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  console.log(`Yahoo Finance v8: fetched ${fetchedCount}/${symbols.length} instruments`);
+  return result;
 }
 
 // Fallback data when Yahoo Finance is unavailable
@@ -257,67 +255,75 @@ export function calculateBias(instrument, vixLevel) {
   return 'Mixed';
 }
 
-// Fetch Currency Futures
+// Fetch Currency Futures (using v8 chart API)
 export async function fetchCurrencyFutures() {
-  const symbols = Object.keys(CURRENCY_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  const symbols = Object.keys(CURRENCY_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = CURRENCY_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      console.error(`Currency API returned status: ${response.status}`);
-      return getCurrencyFallbackData();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      console.warn('Yahoo Finance returned no currency quotes, using fallback data');
-      return getCurrencyFallbackData();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const decimals = config.symbol === 'DX' ? 2 : 4;
 
-    quotes.forEach(quote => {
-      const config = CURRENCY_SYMBOLS[quote.symbol];
-      if (config) {
-        result[config.symbol] = {
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
-          price: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: quote.regularMarketChangePercent || 0,
-          previousClose: quote.regularMarketPreviousClose || 0,
-          high: quote.regularMarketDayHigh || 0,
-          low: quote.regularMarketDayLow || 0,
-          fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh || 0,
-          fiftyTwoWeekLow: quote.fiftyTwoWeekLow || 0,
-          marketState: quote.marketState || 'REGULAR'
-        };
-      }
-    });
+          price: parseFloat(price.toFixed(decimals)),
+          change: parseFloat(change.toFixed(decimals)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(decimals)),
+          high: meta.regularMarketDayHigh || price,
+          low: meta.regularMarketDayLow || price,
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || 0,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow || 0,
+          marketState: 'REGULAR'
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
 
-    // Fill in missing with fallback
-    const fallback = getCurrencyFallbackData();
-    Object.keys(fallback).forEach(symbol => {
-      if (!result[symbol]) {
-        result[symbol] = fallback[symbol];
-      }
-    });
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-    console.log(`Currency Futures: fetched ${Object.keys(result).length} currencies`);
-    return result;
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
 
-  } catch (error) {
-    console.error('Currency fetch error:', error.message);
-    return getCurrencyFallbackData();
-  }
+  // Fill in missing with fallback
+  const fallback = getCurrencyFallbackData();
+  Object.keys(fallback).forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  console.log(`Currency Futures v8: fetched ${fetchedCount}/${symbols.length} currencies`);
+  return result;
 }
 
 function getCurrencyFallbackData() {
@@ -354,68 +360,75 @@ function getCurrencyFallbackData() {
   return result;
 }
 
-// Fetch International Indices
+// Fetch International Indices (using v8 chart API)
 export async function fetchInternationalIndices() {
-  const symbols = Object.keys(INTERNATIONAL_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  const symbols = Object.keys(INTERNATIONAL_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = INTERNATIONAL_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      console.error(`International indices API returned status: ${response.status}`);
-      return getInternationalFallbackData();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      console.warn('Yahoo Finance returned no international quotes, using fallback data');
-      return getInternationalFallbackData();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const sessionStatus = getSessionStatus(config.timezone, config.marketHours);
 
-    quotes.forEach(quote => {
-      const config = INTERNATIONAL_SYMBOLS[quote.symbol];
-      if (config) {
-        const sessionStatus = getSessionStatus(config.timezone, config.marketHours);
-        result[config.symbol] = {
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
-          price: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: quote.regularMarketChangePercent || 0,
-          previousClose: quote.regularMarketPreviousClose || 0,
-          high: quote.regularMarketDayHigh || 0,
-          low: quote.regularMarketDayLow || 0,
-          marketState: quote.marketState || 'CLOSED',
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2)),
+          high: meta.regularMarketDayHigh || price,
+          low: meta.regularMarketDayLow || price,
+          marketState: sessionStatus === 'LIVE' ? 'REGULAR' : 'CLOSED',
           sessionStatus: sessionStatus,
           timezone: config.timezone
-        };
-      }
-    });
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
 
-    // Fill in missing with fallback
-    const fallback = getInternationalFallbackData();
-    Object.keys(fallback).forEach(symbol => {
-      if (!result[symbol]) {
-        result[symbol] = fallback[symbol];
-      }
-    });
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-    console.log(`International Indices: fetched ${Object.keys(result).length} indices`);
-    return result;
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
 
-  } catch (error) {
-    console.error('International indices fetch error:', error.message);
-    return getInternationalFallbackData();
-  }
+  // Fill in missing with fallback
+  const fallback = getInternationalFallbackData();
+  Object.keys(fallback).forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  console.log(`International Indices v8: fetched ${fetchedCount}/${symbols.length} indices`);
+  return result;
 }
 
 function getSessionStatus(timezone, marketHours) {
@@ -476,69 +489,76 @@ function getInternationalFallbackData() {
   return result;
 }
 
-// Fetch Sector ETFs
+// Fetch Sector ETFs (using v8 chart API)
 export async function fetchSectorETFs() {
-  const symbols = Object.keys(SECTOR_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  const symbols = Object.keys(SECTOR_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = SECTOR_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      console.error(`Sector ETFs API returned status: ${response.status}`);
-      return getSectorFallbackData();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      console.warn('Yahoo Finance returned no sector quotes, using fallback data');
-      return getSectorFallbackData();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
 
-    quotes.forEach(quote => {
-      const config = SECTOR_SYMBOLS[quote.symbol];
-      if (config) {
-        result[config.symbol] = {
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
-          price: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: quote.regularMarketChangePercent || 0,
-          previousClose: quote.regularMarketPreviousClose || 0
-        };
-      }
-    });
-
-    // Fill in missing with fallback
-    const fallback = getSectorFallbackData();
-    Object.keys(fallback).forEach(symbol => {
-      if (!result[symbol]) {
-        result[symbol] = fallback[symbol];
-      }
-    });
-
-    // Sort by changePercent to identify leaders and laggards
-    const sorted = Object.entries(result).sort((a, b) => b[1].changePercent - a[1].changePercent);
-    if (sorted.length > 0) {
-      result[sorted[0][0]].isLeader = true;
-      result[sorted[sorted.length - 1][0]].isLaggard = true;
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2))
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
     }
+  });
 
-    console.log(`Sector ETFs: fetched ${Object.keys(result).length} sectors`);
-    return result;
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-  } catch (error) {
-    console.error('Sector ETFs fetch error:', error.message);
-    return getSectorFallbackData();
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
+
+  // Fill in missing with fallback
+  const fallback = getSectorFallbackData();
+  Object.keys(fallback).forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  // Sort by changePercent to identify leaders and laggards
+  const sorted = Object.entries(result).sort((a, b) => b[1].changePercent - a[1].changePercent);
+  if (sorted.length > 0) {
+    result[sorted[0][0]].isLeader = true;
+    result[sorted[sorted.length - 1][0]].isLaggard = true;
   }
+
+  console.log(`Sector ETFs v8: fetched ${fetchedCount}/${symbols.length} sectors`);
+  return result;
 }
 
 function getSectorFallbackData() {
@@ -588,78 +608,83 @@ export function calculateDXYStrength(dxChangePercent) {
   return { level: 'Neutral', implication: 'No significant currency impact' };
 }
 
-// Fetch Magnificent Seven Stocks
+// Fetch Magnificent Seven Stocks (using v8 chart API)
 export async function fetchMag7Stocks() {
-  const symbols = Object.keys(MAG7_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  const symbols = Object.keys(MAG7_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = MAG7_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      console.error(`Mag7 API returned status: ${response.status}`);
-      return getMag7FallbackData();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      console.warn('Yahoo Finance returned no Mag7 quotes, using fallback data');
-      return getMag7FallbackData();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
 
-    quotes.forEach(quote => {
-      const config = MAG7_SYMBOLS[quote.symbol];
-      if (config) {
-        const changePercent = quote.regularMarketChangePercent || 0;
+      // Determine trend status
+      let trend = 'Flat';
+      if (changePercent > 1) trend = 'Strong Rally';
+      else if (changePercent > 0.3) trend = 'Up';
+      else if (changePercent < -1) trend = 'Sharp Drop';
+      else if (changePercent < -0.3) trend = 'Down';
 
-        // Determine trend status
-        let trend = 'Flat';
-        if (changePercent > 1) trend = 'Strong Rally';
-        else if (changePercent > 0.3) trend = 'Up';
-        else if (changePercent < -1) trend = 'Sharp Drop';
-        else if (changePercent < -0.3) trend = 'Down';
-
-        result[config.symbol] = {
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
           description: config.description,
-          price: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: changePercent,
-          previousClose: quote.regularMarketPreviousClose || 0,
-          marketCap: quote.marketCap || 0,
-          marketCapFormatted: formatMarketCap(quote.marketCap),
-          fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh || 0,
-          fiftyTwoWeekLow: quote.fiftyTwoWeekLow || 0,
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2)),
+          marketCap: 0, // Not available in v8 API
+          marketCapFormatted: 'N/A',
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || 0,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow || 0,
           trend: trend,
-          marketState: quote.marketState || 'REGULAR'
-        };
-      }
-    });
+          marketState: 'REGULAR'
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
 
-    // Fill in missing with fallback
-    const fallback = getMag7FallbackData();
-    Object.keys(fallback).forEach(symbol => {
-      if (!result[symbol]) {
-        result[symbol] = fallback[symbol];
-      }
-    });
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-    console.log(`Mag7 Stocks: fetched ${Object.keys(result).length} stocks`);
-    return result;
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
 
-  } catch (error) {
-    console.error('Mag7 fetch error:', error.message);
-    return getMag7FallbackData();
-  }
+  // Fill in missing with fallback
+  const fallback = getMag7FallbackData();
+  Object.keys(fallback).forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  console.log(`Mag7 Stocks v8: fetched ${fetchedCount}/${symbols.length} stocks`);
+  return result;
 }
 
 function formatMarketCap(marketCap) {
@@ -724,61 +749,78 @@ const TREASURY_YIELD_SYMBOLS = {
 
 // Note: CRYPTO_SYMBOLS is already defined at the top of the file with sector info
 
-// Fetch Treasury Yields
+// Fetch Treasury Yields (using v8 chart API)
 export async function fetchTreasuryYields() {
-  const symbols = Object.keys(TREASURY_YIELD_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  const symbols = Object.keys(TREASURY_YIELD_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = TREASURY_YIELD_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      console.error(`Treasury yields API returned status: ${response.status}`);
-      return getTreasuryYieldsFallback();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      return getTreasuryYieldsFallback();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
-    quotes.forEach(quote => {
-      const config = TREASURY_YIELD_SYMBOLS[quote.symbol];
-      if (config) {
-        result[config.symbol] = {
+      const yieldValue = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || yieldValue;
+      const change = yieldValue - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
-          yield: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: quote.regularMarketChangePercent || 0,
-          previousClose: quote.regularMarketPreviousClose || 0
-        };
-      }
-    });
+          yield: parseFloat(yieldValue.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2))
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
 
-    // Calculate 2s10s spread (using 5Y as proxy for 2Y if not available)
-    const twoYear = result['5Y']?.yield || 4.21; // Use 5Y as approximation
-    const tenYear = result['10Y']?.yield || 4.52;
-    result.yieldCurve = {
-      spread2s10s: parseFloat((tenYear - twoYear).toFixed(2)),
-      isInverted: tenYear < twoYear,
-      status: tenYear < twoYear ? 'Inverted' : (tenYear - twoYear < 0.25 ? 'Flat' : 'Normal')
-    };
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-    console.log(`Treasury Yields: fetched ${Object.keys(result).length - 1} yields`);
-    return result;
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
 
-  } catch (error) {
-    console.error('Treasury yields fetch error:', error.message);
-    return getTreasuryYieldsFallback();
-  }
+  // Fill in missing with fallback
+  const fallback = getTreasuryYieldsFallback();
+  ['3M', '5Y', '10Y', '30Y'].forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  // Calculate 2s10s spread (using 5Y as proxy for 2Y if not available)
+  const twoYear = result['5Y']?.yield || 4.21;
+  const tenYear = result['10Y']?.yield || 4.52;
+  result.yieldCurve = {
+    spread2s10s: parseFloat((tenYear - twoYear).toFixed(2)),
+    isInverted: tenYear < twoYear,
+    status: tenYear < twoYear ? 'Inverted' : (tenYear - twoYear < 0.25 ? 'Flat' : 'Normal')
+  };
+
+  console.log(`Treasury Yields v8: fetched ${fetchedCount}/${symbols.length} yields`);
+  return result;
 }
 
 function getTreasuryYieldsFallback() {
@@ -796,51 +838,69 @@ function getTreasuryYieldsFallback() {
   };
 }
 
-// Fetch Crypto Prices for Quick Stats
+// Fetch Crypto Prices for Quick Stats (using v8 chart API)
 export async function fetchCryptoPrices() {
-  const symbols = Object.keys(CRYPTO_SYMBOLS).join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols)}`;
+  const symbols = Object.keys(CRYPTO_SYMBOLS);
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = CRYPTO_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
 
-    if (!response.ok) {
-      return getCryptoFallback();
-    }
+      if (!response.ok) return null;
 
-    const data = await response.json();
-    const quotes = data.quoteResponse?.result || [];
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
 
-    if (quotes.length === 0) {
-      return getCryptoFallback();
-    }
+      if (!meta || !meta.regularMarketPrice) return null;
 
-    const result = {};
-    quotes.forEach(quote => {
-      const config = CRYPTO_SYMBOLS[quote.symbol];
-      if (config) {
-        result[config.symbol] = {
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+
+      return {
+        symbol: config.symbol,
+        data: {
           name: config.name,
-          price: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: quote.regularMarketChangePercent || 0,
-          previousClose: quote.regularMarketPreviousClose || 0
-        };
-      }
-    });
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2))
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
 
-    console.log(`Crypto: fetched ${Object.keys(result).length} prices`);
-    return result;
+  const results = await Promise.allSettled(fetchPromises);
+  const result = {};
+  let fetchedCount = 0;
 
-  } catch (error) {
-    console.error('Crypto fetch error:', error.message);
-    return getCryptoFallback();
-  }
+  results.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      result[res.value.symbol] = res.value.data;
+      fetchedCount++;
+    }
+  });
+
+  // Fill in missing with fallback
+  const fallback = getCryptoFallback();
+  ['BTC', 'ETH'].forEach(symbol => {
+    if (!result[symbol]) {
+      result[symbol] = fallback[symbol];
+    }
+  });
+
+  console.log(`Crypto v8: fetched ${fetchedCount}/${symbols.length} prices`);
+  return result;
 }
 
 function getCryptoFallback() {
