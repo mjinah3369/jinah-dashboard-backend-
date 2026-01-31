@@ -6,6 +6,18 @@ import { fetchFredData } from './services/fred.js';
 import { fetchPolygonData } from './services/polygon.js';
 import { fetchFinnhubNews, fetchMag7News } from './services/finnhubNews.js';
 import { buildDashboardResponse } from './services/dashboardBuilder.js';
+import {
+  fetchEnergyReports,
+  fetchAgricultureReports,
+  fetchTreasuryAuctions,
+  fetchCentralBankCalendar,
+  buildReportsCalendar
+} from './services/fundamentalReports.js';
+import {
+  buildWeatherReport,
+  fetchDroughtMonitor,
+  fetch610DayOutlook
+} from './services/weather.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -113,6 +125,182 @@ app.post('/api/dashboard/refresh', async (req, res) => {
   cachedData = null;
   lastFetchTime = null;
   res.json({ message: 'Cache cleared. Next request will fetch fresh data.' });
+});
+
+// ============================================================================
+// FUNDAMENTAL REPORTS ENDPOINTS
+// ============================================================================
+
+// Cache for reports calendar
+let reportsCache = null;
+let reportsLastFetch = null;
+const REPORTS_CACHE_DURATION = 60 * 60 * 1000; // 1 hour (reports don't change frequently)
+
+// Get all upcoming reports calendar
+app.get('/api/reports/calendar', (req, res) => {
+  try {
+    const now = Date.now();
+
+    // Return cached data if still valid
+    if (reportsCache && reportsLastFetch && (now - reportsLastFetch) < REPORTS_CACHE_DURATION) {
+      return res.json(reportsCache);
+    }
+
+    console.log('Building fresh reports calendar...');
+    const calendar = buildReportsCalendar();
+
+    // Cache the result
+    reportsCache = calendar;
+    reportsLastFetch = now;
+
+    res.json(calendar);
+  } catch (error) {
+    console.error('Reports calendar error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch reports calendar',
+      message: error.message
+    });
+  }
+});
+
+// Get energy sector reports only
+app.get('/api/reports/energy', (req, res) => {
+  try {
+    const reports = fetchEnergyReports();
+    res.json({
+      category: 'energy',
+      reports,
+      count: reports.length,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Energy reports error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch energy reports',
+      message: error.message
+    });
+  }
+});
+
+// Get agriculture sector reports only
+app.get('/api/reports/agriculture', (req, res) => {
+  try {
+    const reports = fetchAgricultureReports();
+    res.json({
+      category: 'agriculture',
+      reports,
+      count: reports.length,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Agriculture reports error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch agriculture reports',
+      message: error.message
+    });
+  }
+});
+
+// Get Treasury auctions only
+app.get('/api/reports/treasury', (req, res) => {
+  try {
+    const reports = fetchTreasuryAuctions();
+    res.json({
+      category: 'bonds',
+      reports,
+      count: reports.length,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Treasury auctions error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch Treasury auctions',
+      message: error.message
+    });
+  }
+});
+
+// Get Central Bank meetings only
+app.get('/api/reports/centralbanks', (req, res) => {
+  try {
+    const reports = fetchCentralBankCalendar();
+    res.json({
+      category: 'centralbank',
+      reports,
+      count: reports.length,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Central Bank calendar error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch Central Bank calendar',
+      message: error.message
+    });
+  }
+});
+
+// ============================================================================
+// WEATHER DATA ENDPOINTS
+// ============================================================================
+
+// Cache for weather data
+let weatherCache = null;
+let weatherLastFetch = null;
+const WEATHER_CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+// Get comprehensive weather report
+app.get('/api/weather', async (req, res) => {
+  try {
+    const now = Date.now();
+
+    // Return cached data if still valid
+    if (weatherCache && weatherLastFetch && (now - weatherLastFetch) < WEATHER_CACHE_DURATION) {
+      return res.json(weatherCache);
+    }
+
+    console.log('Fetching fresh weather data...');
+    const weatherReport = await buildWeatherReport();
+
+    // Cache the result
+    weatherCache = weatherReport;
+    weatherLastFetch = now;
+
+    res.json(weatherReport);
+  } catch (error) {
+    console.error('Weather API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch weather data',
+      message: error.message
+    });
+  }
+});
+
+// Get drought monitor data only
+app.get('/api/weather/drought', async (req, res) => {
+  try {
+    const drought = await fetchDroughtMonitor();
+    res.json(drought);
+  } catch (error) {
+    console.error('Drought API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch drought data',
+      message: error.message
+    });
+  }
+});
+
+// Get 6-10 day outlook only
+app.get('/api/weather/outlook', async (req, res) => {
+  try {
+    const outlook = await fetch610DayOutlook();
+    res.json(outlook);
+  } catch (error) {
+    console.error('Outlook API error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch outlook data',
+      message: error.message
+    });
+  }
 });
 
 app.listen(PORT, () => {
