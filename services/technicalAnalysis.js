@@ -411,6 +411,114 @@ async function analyzeAllInstruments() {
   return results;
 }
 
+/**
+ * Get chart data (OHLC + EMAs) for an instrument
+ * @param {string} symbol - Instrument symbol
+ * @param {number} days - Number of days (default 60)
+ * @returns {Object} - Chart data with candles and EMAs
+ */
+async function getChartData(symbol, days = 60) {
+  const yahooSymbol = YAHOO_SYMBOLS[symbol];
+  if (!yahooSymbol) {
+    return { error: 'Symbol not found' };
+  }
+
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=3mo`;
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    if (!response.ok) {
+      return { error: 'Failed to fetch data' };
+    }
+
+    const data = await response.json();
+    const result = data.chart?.result?.[0];
+
+    if (!result) {
+      return { error: 'No data available' };
+    }
+
+    const timestamps = result.timestamp || [];
+    const quote = result.indicators?.quote?.[0] || {};
+
+    // Build candle data for chart
+    const candles = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      if (quote.open?.[i] && quote.high?.[i] && quote.low?.[i] && quote.close?.[i]) {
+        candles.push({
+          time: timestamps[i], // Unix timestamp
+          open: parseFloat(quote.open[i].toFixed(2)),
+          high: parseFloat(quote.high[i].toFixed(2)),
+          low: parseFloat(quote.low[i].toFixed(2)),
+          close: parseFloat(quote.close[i].toFixed(2))
+        });
+      }
+    }
+
+    // Calculate EMAs for overlay
+    const closes = candles.map(c => c.close);
+    const ema9Values = calculateEMAArray(closes, 9);
+    const ema21Values = calculateEMAArray(closes, 21);
+    const ema50Values = calculateEMAArray(closes, 50);
+
+    // Add EMA data points
+    const ema9Data = [];
+    const ema21Data = [];
+    const ema50Data = [];
+
+    for (let i = 0; i < candles.length; i++) {
+      if (ema9Values[i] !== null) {
+        ema9Data.push({ time: candles[i].time, value: ema9Values[i] });
+      }
+      if (ema21Values[i] !== null) {
+        ema21Data.push({ time: candles[i].time, value: ema21Values[i] });
+      }
+      if (ema50Values[i] !== null) {
+        ema50Data.push({ time: candles[i].time, value: ema50Values[i] });
+      }
+    }
+
+    return {
+      symbol,
+      candles,
+      ema9: ema9Data,
+      ema21: ema21Data,
+      ema50: ema50Data,
+      lastUpdate: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error(`Chart data error for ${symbol}:`, error.message);
+    return { error: error.message };
+  }
+}
+
+/**
+ * Calculate EMA array (returns value for each point)
+ */
+function calculateEMAArray(prices, period) {
+  const result = new Array(prices.length).fill(null);
+  if (prices.length < period) return result;
+
+  const multiplier = 2 / (period + 1);
+
+  // First EMA is SMA
+  let ema = prices.slice(0, period).reduce((sum, p) => sum + p, 0) / period;
+  result[period - 1] = parseFloat(ema.toFixed(2));
+
+  // Calculate rest
+  for (let i = period; i < prices.length; i++) {
+    ema = (prices[i] - ema) * multiplier + ema;
+    result[i] = parseFloat(ema.toFixed(2));
+  }
+
+  return result;
+}
+
 export {
   calculateEMA,
   calculateADX,
@@ -418,5 +526,6 @@ export {
   analyzeTechnicals,
   analyzeAllInstruments,
   detectTrending,
+  getChartData,
   YAHOO_SYMBOLS
 };

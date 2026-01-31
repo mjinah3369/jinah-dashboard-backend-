@@ -22,6 +22,7 @@ import {
   analyzeTechnicals,
   analyzeAllInstruments,
   detectTrending,
+  getChartData,
   YAHOO_SYMBOLS
 } from './services/technicalAnalysis.js';
 import {
@@ -348,6 +349,32 @@ app.get('/api/technicals', async (req, res) => {
     console.error('Technical analysis error:', error);
     res.status(500).json({
       error: 'Failed to calculate technical analysis',
+      message: error.message
+    });
+  }
+});
+
+// Get chart data (OHLC + EMAs) for an instrument
+app.get('/api/chart/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const upperSymbol = symbol.toUpperCase();
+
+    console.log(`Fetching chart data for ${upperSymbol}...`);
+    const chartData = await getChartData(upperSymbol);
+
+    if (chartData.error) {
+      return res.status(400).json({
+        error: chartData.error,
+        symbol: upperSymbol
+      });
+    }
+
+    res.json(chartData);
+  } catch (error) {
+    console.error(`Chart data error for ${req.params.symbol}:`, error);
+    res.status(500).json({
+      error: 'Failed to fetch chart data',
       message: error.message
     });
   }
