@@ -185,7 +185,7 @@ function getFallbackData() {
     // Equity Indices
     'ES': { name: 'S&P 500 E-mini', basePrice: 6050, volatility: 0.8, sector: 'indices' },
     'NQ': { name: 'Nasdaq 100 E-mini', basePrice: 21500, volatility: 1.2, sector: 'indices' },
-    'YM': { name: 'Dow Jones E-mini', basePrice: 44200, volatility: 0.6, sector: 'indices' },
+    'YM': { name: 'Dow Jones E-mini', basePrice: 49000, volatility: 0.6, sector: 'indices' },
     'RTY': { name: 'Russell 2000 E-mini', basePrice: 2280, volatility: 1.0, sector: 'indices' },
     // Bonds / Interest Rates
     'ZT': { name: '2-Year T-Note', basePrice: 102.50, volatility: 0.15, sector: 'bonds' },
