@@ -116,6 +116,24 @@ const INSTRUMENT_DRIVERS = {
   },
 
   // Bonds/Treasuries
+  ZT: {
+    name: '2-Year T-Note',
+    category: 'Bonds',
+    drivers: {
+      fedPolicy: { relationship: 'direct', description: 'Most sensitive to Fed rate expectations' },
+      inflation: { relationship: 'inverse', description: 'Short-term inflation expectations' }
+    },
+    keyFactors: ['Fed funds rate expectations', 'Near-term inflation', 'FOMC dot plot']
+  },
+  ZF: {
+    name: '5-Year T-Note',
+    category: 'Bonds',
+    drivers: {
+      fedPolicy: { relationship: 'direct', description: 'Responds to Fed policy path' },
+      inflation: { relationship: 'inverse', description: 'Medium-term inflation expectations' }
+    },
+    keyFactors: ['Fed policy path', 'Inflation expectations', 'Economic growth']
+  },
   ZN: {
     name: '10-Year T-Note',
     category: 'Bonds',
@@ -135,6 +153,15 @@ const INSTRUMENT_DRIVERS = {
         effects: ['Bearish for growth stocks', 'Bearish for gold', 'Headwind for equities', 'Dollar supportive']
       }
     }
+  },
+  TN: {
+    name: 'Ultra 10-Year T-Note',
+    category: 'Bonds',
+    drivers: {
+      ZN: { relationship: 'direct', description: 'Follows 10-year direction with higher duration' },
+      inflation: { relationship: 'inverse', description: 'Sensitive to inflation expectations' }
+    },
+    keyFactors: ['10-year yields', 'Inflation expectations', 'Duration demand']
   },
   ZB: {
     name: '30-Year T-Bond',
@@ -202,6 +229,28 @@ const INSTRUMENT_DRIVERS = {
     keyFactors: ['Hogs & Pigs report', 'Export demand', 'Feed costs'],
     reports: ['Hogs & Pigs', 'Cold Storage']
   },
+  ZM: {
+    name: 'Soybean Meal',
+    category: 'Agriculture',
+    drivers: {
+      ZS: { relationship: 'direct', description: 'Follows soybean direction' },
+      crushDemand: { relationship: 'direct', description: 'Strong crush margins = more meal supply' },
+      exports: { relationship: 'direct', description: 'Export demand drives prices' }
+    },
+    keyFactors: ['Soybean prices', 'Crush margins', 'Feed demand', 'Exports'],
+    reports: ['WASDE', 'Export Sales']
+  },
+  ZL: {
+    name: 'Soybean Oil',
+    category: 'Agriculture',
+    drivers: {
+      ZS: { relationship: 'direct', description: 'Follows soybean direction' },
+      biodiesel: { relationship: 'direct', description: 'Renewable diesel demand = bullish' },
+      palmOil: { relationship: 'direct', description: 'Competes with palm oil' }
+    },
+    keyFactors: ['Soybean prices', 'Biodiesel mandates', 'Palm oil prices', 'Exports'],
+    reports: ['WASDE', 'Export Sales']
+  },
 
   // Currencies
   DX: {
@@ -223,6 +272,46 @@ const INSTRUMENT_DRIVERS = {
         effects: ['Bullish for commodities', 'Supportive for EM', 'Bullish for exporters', 'Inflationary']
       }
     }
+  },
+  '6E': {
+    name: 'Euro FX',
+    category: 'Currency',
+    drivers: {
+      DX: { relationship: 'inverse', description: 'Moves opposite to dollar index' },
+      ecbPolicy: { relationship: 'direct', description: 'Hawkish ECB = stronger euro' },
+      riskSentiment: { relationship: 'direct', description: 'Risk-on typically supports euro' }
+    },
+    keyFactors: ['ECB policy', 'Fed vs ECB divergence', 'Eurozone growth', 'Risk sentiment']
+  },
+  '6J': {
+    name: 'Japanese Yen',
+    category: 'Currency',
+    drivers: {
+      bojPolicy: { relationship: 'direct', description: 'BOJ tightening = stronger yen' },
+      riskSentiment: { relationship: 'inverse', description: 'Risk-off = yen strength (safe haven)' },
+      carryTrade: { relationship: 'inverse', description: 'Carry unwind = yen strength' }
+    },
+    keyFactors: ['BOJ policy', 'Yield differentials', 'Risk sentiment', 'Intervention risk']
+  },
+  '6B': {
+    name: 'British Pound',
+    category: 'Currency',
+    drivers: {
+      boePolicy: { relationship: 'direct', description: 'Hawkish BOE = stronger pound' },
+      riskSentiment: { relationship: 'direct', description: 'Risk-on supports pound' }
+    },
+    keyFactors: ['BOE policy', 'UK inflation', 'Economic data', 'Political risk']
+  },
+  '6A': {
+    name: 'Australian Dollar',
+    category: 'Currency',
+    drivers: {
+      rbaPolicy: { relationship: 'direct', description: 'Hawkish RBA = stronger AUD' },
+      china: { relationship: 'direct', description: 'China growth = bullish AUD' },
+      commodities: { relationship: 'direct', description: 'Higher commodity prices = bullish AUD' },
+      riskSentiment: { relationship: 'direct', description: 'Risk-on = bullish AUD' }
+    },
+    keyFactors: ['RBA policy', 'China demand', 'Iron ore prices', 'Risk sentiment']
   },
 
   // Volatility

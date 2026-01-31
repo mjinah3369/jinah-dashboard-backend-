@@ -411,20 +411,31 @@ async function analyzeAllInstruments() {
   return results;
 }
 
+// Interval to range mapping for Yahoo Finance API
+const INTERVAL_CONFIG = {
+  '5m': { interval: '5m', range: '5d', label: '5 Min' },
+  '15m': { interval: '15m', range: '10d', label: '15 Min' },
+  '1h': { interval: '1h', range: '1mo', label: '1 Hour' },
+  '1d': { interval: '1d', range: '3mo', label: 'Daily' }
+};
+
 /**
  * Get chart data (OHLC + EMAs) for an instrument
  * @param {string} symbol - Instrument symbol
- * @param {number} days - Number of days (default 60)
+ * @param {string} interval - Time interval (5m, 15m, 1h, 1d)
  * @returns {Object} - Chart data with candles and EMAs
  */
-async function getChartData(symbol, days = 60) {
+async function getChartData(symbol, interval = '1d') {
   const yahooSymbol = YAHOO_SYMBOLS[symbol];
   if (!yahooSymbol) {
     return { error: 'Symbol not found' };
   }
 
+  // Validate and get interval config
+  const config = INTERVAL_CONFIG[interval] || INTERVAL_CONFIG['1d'];
+
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=3mo`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${config.interval}&range=${config.range}`;
 
     const response = await fetch(url, {
       headers: {
@@ -485,6 +496,8 @@ async function getChartData(symbol, days = 60) {
 
     return {
       symbol,
+      interval: config.interval,
+      intervalLabel: config.label,
       candles,
       ema9: ema9Data,
       ema21: ema21Data,

@@ -355,13 +355,15 @@ app.get('/api/technicals', async (req, res) => {
 });
 
 // Get chart data (OHLC + EMAs) for an instrument
+// Supports interval query param: 5m, 15m, 1h, 1d (default)
 app.get('/api/chart/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
+    const { interval = '1d' } = req.query;
     const upperSymbol = symbol.toUpperCase();
 
-    console.log(`Fetching chart data for ${upperSymbol}...`);
-    const chartData = await getChartData(upperSymbol);
+    console.log(`Fetching chart data for ${upperSymbol} (${interval})...`);
+    const chartData = await getChartData(upperSymbol, interval);
 
     if (chartData.error) {
       return res.status(400).json({
