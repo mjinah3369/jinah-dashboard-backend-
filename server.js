@@ -5,6 +5,7 @@ import { fetchEconomicCalendar } from './services/alphaVantage.js';
 import { fetchFredData } from './services/fred.js';
 import { fetchPolygonData } from './services/polygon.js';
 import { fetchFinnhubNews, fetchMag7News } from './services/finnhubNews.js';
+import { fetchNewsApiHeadlines } from './services/newsApi.js';
 import { buildDashboardResponse } from './services/dashboardBuilder.js';
 import {
   fetchEnergyReports,
@@ -69,7 +70,8 @@ app.get('/api/dashboard', async (req, res) => {
       polygonData,
       currencyData,
       internationalData,
-      newsData,
+      finnhubNewsData,
+      newsApiData,
       sectorData,
       mag7Data,
       mag7NewsData,
@@ -83,6 +85,7 @@ app.get('/api/dashboard', async (req, res) => {
       fetchCurrencyFutures(),
       fetchInternationalIndices(),
       fetchFinnhubNews(),
+      fetchNewsApiHeadlines(),
       fetchSectorETFs(),
       fetchMag7Stocks(),
       fetchMag7News(),
@@ -97,19 +100,42 @@ app.get('/api/dashboard', async (req, res) => {
     const polygon = polygonData.status === 'fulfilled' ? polygonData.value : {};
     const currencies = currencyData.status === 'fulfilled' ? currencyData.value : {};
     const international = internationalData.status === 'fulfilled' ? internationalData.value : {};
-    const news = newsData.status === 'fulfilled' ? newsData.value : [];
+    const finnhubNews = finnhubNewsData.status === 'fulfilled' ? finnhubNewsData.value : [];
+    const newsApiNews = newsApiData.status === 'fulfilled' ? newsApiData.value : [];
     const sectors = sectorData.status === 'fulfilled' ? sectorData.value : {};
     const mag7 = mag7Data.status === 'fulfilled' ? mag7Data.value : {};
     const mag7News = mag7NewsData.status === 'fulfilled' ? mag7NewsData.value : {};
     const treasuryYields = treasuryYieldsData.status === 'fulfilled' ? treasuryYieldsData.value : {};
     const crypto = cryptoData.status === 'fulfilled' ? cryptoData.value : {};
 
+    // Merge news from Finnhub and NewsAPI, prioritizing by timestamp
+    // Remove duplicates based on headline similarity
+    const seenHeadlines = new Set();
+    const allNews = [...finnhubNews, ...newsApiNews]
+      .filter(item => {
+        // Simple deduplication based on headline
+        const normalizedHeadline = (item.headline || item.title || '').toLowerCase().slice(0, 50);
+        if (seenHeadlines.has(normalizedHeadline)) return false;
+        seenHeadlines.add(normalizedHeadline);
+        return true;
+      })
+      .sort((a, b) => {
+        // Sort by timestamp, most recent first
+        const timeA = new Date(a.timestamp || 0).getTime();
+        const timeB = new Date(b.timestamp || 0).getTime();
+        return timeB - timeA;
+      })
+      .slice(0, 20); // Limit to 20 news items
+
+    const news = allNews;
+    console.log(`Merged news: ${finnhubNews.length} from Finnhub + ${newsApiNews.length} from NewsAPI = ${news.length} total`);
+
     // Calculate expectation meters
     const expectationMeters = calculateExpectationMeters(futures, currencies, news);
 
     // Log any errors
-    const sources = ['Yahoo Finance', 'Alpha Vantage', 'FRED', 'Polygon', 'Currency', 'International', 'Finnhub News', 'Sectors', 'Mag7 Stocks', 'Mag7 News', 'Treasury Yields', 'Crypto'];
-    [futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData, mag7Data, mag7NewsData, treasuryYieldsData, cryptoData].forEach((result, i) => {
+    const sources = ['Yahoo Finance', 'Alpha Vantage', 'FRED', 'Polygon', 'Currency', 'International', 'Finnhub News', 'NewsAPI', 'Sectors', 'Mag7 Stocks', 'Mag7 News', 'Treasury Yields', 'Crypto'];
+    [futuresData, economicData, fredData, polygonData, currencyData, internationalData, finnhubNewsData, newsApiData, sectorData, mag7Data, mag7NewsData, treasuryYieldsData, cryptoData].forEach((result, i) => {
       if (result.status === 'rejected') {
         console.error(`${sources[i]} error:`, result.reason?.message || result.reason);
       }
