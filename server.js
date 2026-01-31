@@ -31,6 +31,13 @@ import {
   generateMarketDriversSummary,
   INSTRUMENT_DRIVERS
 } from './services/instrumentSummary.js';
+import {
+  processWebhook,
+  getAllScannerData,
+  getScannerData,
+  getScannerSummary,
+  clearScannerData
+} from './services/scannerWebhook.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -669,7 +676,97 @@ app.get('/api/instruments/summaries', async (req, res) => {
   }
 });
 
+// ============================================================================
+// REAL-TIME SCANNER ENDPOINTS (TradingView Webhooks)
+// ============================================================================
+
+// Receive webhook from TradingView
+app.post('/api/scanner/webhook', (req, res) => {
+  try {
+    const payload = req.body;
+
+    if (!payload || Object.keys(payload).length === 0) {
+      return res.status(400).json({
+        error: 'Empty payload',
+        message: 'Webhook payload is empty'
+      });
+    }
+
+    const result = processWebhook(payload);
+
+    if (result.error) {
+      return res.status(400).json(result);
+    }
+
+    res.json({
+      success: true,
+      symbol: result.symbol,
+      score: result.score?.total,
+      grade: result.score?.grade,
+      bias: result.bias,
+      timestamp: result.timestamp
+    });
+  } catch (error) {
+    console.error('Scanner webhook error:', error);
+    res.status(500).json({
+      error: 'Webhook processing failed',
+      message: error.message
+    });
+  }
+});
+
+// Get all scanner data
+app.get('/api/scanner', (req, res) => {
+  try {
+    const summary = getScannerSummary();
+    res.json(summary);
+  } catch (error) {
+    console.error('Scanner data error:', error);
+    res.status(500).json({
+      error: 'Failed to get scanner data',
+      message: error.message
+    });
+  }
+});
+
+// Get scanner data for specific symbol
+app.get('/api/scanner/:symbol', (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const data = getScannerData(symbol);
+
+    if (!data) {
+      return res.status(404).json({
+        error: 'Symbol not found',
+        message: `No scanner data for ${symbol}. Make sure TradingView webhook is configured.`
+      });
+    }
+
+    res.json(data);
+  } catch (error) {
+    console.error(`Scanner data error for ${req.params.symbol}:`, error);
+    res.status(500).json({
+      error: 'Failed to get scanner data',
+      message: error.message
+    });
+  }
+});
+
+// Clear scanner data (for testing)
+app.delete('/api/scanner', (req, res) => {
+  try {
+    clearScannerData();
+    res.json({ success: true, message: 'Scanner data cleared' });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to clear scanner data',
+      message: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
+  console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
 });
