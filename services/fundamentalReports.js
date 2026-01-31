@@ -7,6 +7,38 @@
 
 const ENERGY_REPORTS = [
   {
+    id: 'opec-momr',
+    name: 'OPEC Monthly Oil Market Report',
+    shortName: 'OPEC Report',
+    category: 'energy',
+    monthlyDate: 12, // Around the 12th of each month
+    time: '7:00 AM ET',
+    timeET: '07:00',
+    importance: 'HIGH',
+    affectedInstruments: ['CL', 'RB'],
+    description: 'OPEC monthly report with oil demand forecasts, production data, and market analysis. Major market mover for crude oil.',
+    scenarios: {
+      bullish: 'Lower production forecast, higher demand estimates, supply concerns',
+      bearish: 'Higher production forecast, lower demand estimates, oversupply warnings'
+    }
+  },
+  {
+    id: 'opec-meeting',
+    name: 'OPEC+ Meeting',
+    shortName: 'OPEC+ Meeting',
+    category: 'energy',
+    monthlyDate: 1, // Usually first week of month (approximate)
+    time: 'Varies',
+    timeET: '10:00',
+    importance: 'HIGH',
+    affectedInstruments: ['CL', 'RB', 'NG'],
+    description: 'OPEC+ production policy meeting. Decisions on output quotas directly impact oil prices.',
+    scenarios: {
+      bullish: 'Production cuts, extended cuts, compliance emphasis',
+      bearish: 'Production increases, quota relaxation, member disputes'
+    }
+  },
+  {
     id: 'api-inventory',
     name: 'API Weekly Inventory',
     shortName: 'API Inventory',
@@ -443,25 +475,41 @@ export function fetchEnergyReports() {
   const reports = [];
   const now = new Date();
   const endDate = new Date(now);
-  endDate.setDate(endDate.getDate() + 14);
+  endDate.setDate(endDate.getDate() + 30); // Extended to 30 days for monthly reports
 
   for (const report of ENERGY_REPORTS) {
-    let nextDate = getNextWeekday(report.dayOfWeek, now);
+    if (report.dayOfWeek !== undefined) {
+      // Weekly report
+      let nextDate = getNextWeekday(report.dayOfWeek, now);
 
-    // Add all occurrences within the next 14 days
-    while (nextDate <= endDate) {
-      reports.push({
-        ...report,
-        date: formatDate(nextDate),
-        dateLabel: getDateLabel(nextDate),
-        isToday: isToday(nextDate),
-        isTomorrow: isTomorrow(nextDate)
-      });
+      // Add all occurrences within the next 14 days
+      while (nextDate <= endDate) {
+        reports.push({
+          ...report,
+          date: formatDate(nextDate),
+          dateLabel: getDateLabel(nextDate),
+          isToday: isToday(nextDate),
+          isTomorrow: isTomorrow(nextDate)
+        });
 
-      // Get next week's occurrence
-      const nextWeek = new Date(nextDate);
-      nextWeek.setDate(nextWeek.getDate() + 7);
-      nextDate = nextWeek;
+        // Get next week's occurrence
+        const nextWeek = new Date(nextDate);
+        nextWeek.setDate(nextWeek.getDate() + 7);
+        nextDate = nextWeek;
+      }
+    } else if (report.monthlyDate !== undefined) {
+      // Monthly report (like OPEC)
+      let nextDate = getNextMonthlyDate(report.monthlyDate, now);
+
+      if (nextDate <= endDate) {
+        reports.push({
+          ...report,
+          date: formatDate(nextDate),
+          dateLabel: getDateLabel(nextDate),
+          isToday: isToday(nextDate),
+          isTomorrow: isTomorrow(nextDate)
+        });
+      }
     }
   }
 
