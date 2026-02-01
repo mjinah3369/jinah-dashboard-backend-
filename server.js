@@ -34,6 +34,8 @@ import {
 import {
   processWebhook,
   getAllScannerData,
+  getICTScannerData,
+  getOrderFlowScannerData,
   getScannerData,
   getScannerSummary,
   clearScannerData
@@ -680,7 +682,7 @@ app.get('/api/instruments/summaries', async (req, res) => {
 // REAL-TIME SCANNER ENDPOINTS (TradingView Webhooks)
 // ============================================================================
 
-// Receive webhook from TradingView
+// Receive webhook from TradingView (supports ICT, OrderFlow, and Multi-Symbol)
 app.post('/api/scanner/webhook', (req, res) => {
   try {
     const payload = req.body;
@@ -698,13 +700,13 @@ app.post('/api/scanner/webhook', (req, res) => {
       return res.status(400).json(result);
     }
 
+    // Handle different response types
     res.json({
       success: true,
-      symbol: result.symbol,
-      score: result.score?.total,
-      grade: result.score?.grade,
-      bias: result.bias,
-      timestamp: result.timestamp
+      type: result.type,
+      count: result.count || 1,
+      data: result.data,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Scanner webhook error:', error);
@@ -715,15 +717,67 @@ app.post('/api/scanner/webhook', (req, res) => {
   }
 });
 
-// Get all scanner data
+// Get all scanner data (both ICT and Order Flow)
 app.get('/api/scanner', (req, res) => {
   try {
-    const summary = getScannerSummary();
-    res.json(summary);
+    const data = getAllScannerData();
+    res.json(data);
   } catch (error) {
     console.error('Scanner data error:', error);
     res.status(500).json({
       error: 'Failed to get scanner data',
+      message: error.message
+    });
+  }
+});
+
+// Get scanner summary (with top opportunities)
+app.get('/api/scanner/summary', (req, res) => {
+  try {
+    const summary = getScannerSummary();
+    res.json(summary);
+  } catch (error) {
+    console.error('Scanner summary error:', error);
+    res.status(500).json({
+      error: 'Failed to get scanner summary',
+      message: error.message
+    });
+  }
+});
+
+// Get ICT scanner data only
+app.get('/api/scanner/ict', (req, res) => {
+  try {
+    const data = getICTScannerData();
+    res.json({
+      type: 'ict',
+      count: Object.keys(data).length,
+      lastUpdate: new Date().toISOString(),
+      data
+    });
+  } catch (error) {
+    console.error('ICT scanner data error:', error);
+    res.status(500).json({
+      error: 'Failed to get ICT scanner data',
+      message: error.message
+    });
+  }
+});
+
+// Get Order Flow scanner data only
+app.get('/api/scanner/orderflow', (req, res) => {
+  try {
+    const data = getOrderFlowScannerData();
+    res.json({
+      type: 'orderflow',
+      count: Object.keys(data).length,
+      lastUpdate: new Date().toISOString(),
+      data
+    });
+  } catch (error) {
+    console.error('Order Flow scanner data error:', error);
+    res.status(500).json({
+      error: 'Failed to get Order Flow scanner data',
       message: error.message
     });
   }
@@ -769,4 +823,6 @@ app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
   console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
+  console.log(`ICT Scanner: http://localhost:${PORT}/api/scanner/ict`);
+  console.log(`Order Flow Scanner: http://localhost:${PORT}/api/scanner/orderflow`);
 });
