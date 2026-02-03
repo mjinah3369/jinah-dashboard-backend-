@@ -744,6 +744,13 @@ export async function generateFinalAnalysis(marketData, options = {}) {
     technicals
   );
 
+  // Find trending instruments beyond the main 6
+  const trendingInstruments = findTrendingInstruments(
+    allNews,
+    { energyReports: todayReports, upcomingReports, nextFOMC },
+    marketData
+  );
+
   // Build final response
   const result = {
     timestamp: new Date().toISOString(),
@@ -757,6 +764,7 @@ export async function generateFinalAnalysis(marketData, options = {}) {
       GC: { ...gcResult, details: instrumentDetails.GC },
       CL: { ...clResult, details: instrumentDetails.CL }
     },
+    trendingInstruments, // NEW: Other instruments with news/report catalysts
     marketContext: generateMarketContext(marketData, newsSentiment, earnings),
     keyRisks: generateKeyRisks(marketData, newsSentiment, earnings, economicReleases),
     newsSummary: {
@@ -1204,6 +1212,120 @@ function buildUpcomingCatalysts(symbol, reports, economicReleases) {
   }
 
   return catalysts.slice(0, 5);
+}
+
+/**
+ * Find trending instruments based on news, reports, and market activity
+ */
+export function findTrendingInstruments(allNews, reports, marketData) {
+  const trending = [];
+
+  // Extended instrument list beyond the main 6
+  const EXTENDED_INSTRUMENTS = {
+    'NG': { name: 'Natural Gas', category: 'Energy', keywords: ['natural gas', 'lng', 'gas storage', 'heating'] },
+    'SI': { name: 'Silver', category: 'Precious Metal', keywords: ['silver', 'precious metal'] },
+    'HG': { name: 'Copper', category: 'Base Metal', keywords: ['copper', 'industrial metal', 'china demand'] },
+    'ZC': { name: 'Corn', category: 'Agriculture', keywords: ['corn', 'grain', 'ethanol', 'usda'] },
+    'ZS': { name: 'Soybeans', category: 'Agriculture', keywords: ['soybean', 'soy', 'china', 'usda'] },
+    'ZW': { name: 'Wheat', category: 'Agriculture', keywords: ['wheat', 'grain', 'russia', 'ukraine', 'export'] },
+    'KC': { name: 'Coffee', category: 'Soft Commodity', keywords: ['coffee', 'brazil', 'arabica'] },
+    'CT': { name: 'Cotton', category: 'Soft Commodity', keywords: ['cotton', 'textile'] },
+    'LE': { name: 'Live Cattle', category: 'Livestock', keywords: ['cattle', 'beef', 'livestock'] },
+    'HE': { name: 'Lean Hogs', category: 'Livestock', keywords: ['hog', 'pork', 'livestock'] },
+    'BTC': { name: 'Bitcoin', category: 'Crypto', keywords: ['bitcoin', 'btc', 'crypto', 'digital asset', 'sec'] },
+    'ETH': { name: 'Ethereum', category: 'Crypto', keywords: ['ethereum', 'eth', 'crypto', 'defi'] },
+    '6E': { name: 'Euro FX', category: 'Currency', keywords: ['euro', 'ecb', 'eurozone', 'eur/usd'] },
+    '6J': { name: 'Japanese Yen', category: 'Currency', keywords: ['yen', 'boj', 'japan', 'usd/jpy'] },
+    '6B': { name: 'British Pound', category: 'Currency', keywords: ['pound', 'sterling', 'boe', 'uk', 'gbp'] }
+  };
+
+  // Check news for mentions of extended instruments
+  for (const [symbol, config] of Object.entries(EXTENDED_INSTRUMENTS)) {
+    const relevantNews = allNews.filter(news => {
+      const text = (news.headline || news.title || '').toLowerCase();
+      return config.keywords.some(kw => text.includes(kw.toLowerCase()));
+    });
+
+    if (relevantNews.length >= 2) {
+      // Calculate sentiment
+      const bullishCount = relevantNews.filter(n => n.bias === 'bullish').length;
+      const bearishCount = relevantNews.filter(n => n.bias === 'bearish').length;
+      const highImpact = relevantNews.filter(n => n.impact === 'HIGH').length;
+
+      let sentiment = 'neutral';
+      if (bullishCount > bearishCount) sentiment = 'bullish';
+      if (bearishCount > bullishCount) sentiment = 'bearish';
+
+      trending.push({
+        symbol,
+        name: config.name,
+        category: config.category,
+        newsCount: relevantNews.length,
+        highImpactCount: highImpact,
+        sentiment,
+        bullishNews: bullishCount,
+        bearishNews: bearishCount,
+        topHeadlines: relevantNews.slice(0, 3).map(n => ({
+          headline: n.headline || n.title,
+          source: n.source,
+          bias: n.bias,
+          impact: n.impact
+        })),
+        reason: `${relevantNews.length} news mentions${highImpact > 0 ? `, ${highImpact} high-impact` : ''}`
+      });
+    }
+  }
+
+  // Check reports for additional trending items
+  const todayReports = reports.energyReports?.filter(r => r.isToday) || [];
+  const upcomingReports = reports.upcomingReports || [];
+
+  // Natural Gas - EIA report
+  const ngReports = [...todayReports, ...upcomingReports].filter(r =>
+    r.shortName?.toLowerCase().includes('nat gas') || r.affectedInstruments?.includes('NG')
+  );
+  if (ngReports.length > 0 && !trending.find(t => t.symbol === 'NG')) {
+    trending.push({
+      symbol: 'NG',
+      name: 'Natural Gas',
+      category: 'Energy',
+      newsCount: 0,
+      highImpactCount: ngReports.length,
+      sentiment: 'neutral',
+      reason: `${ngReports[0].shortName} ${ngReports[0].isToday ? 'today' : 'upcoming'}`,
+      reportDriven: true,
+      report: ngReports[0]
+    });
+  }
+
+  // Agriculture - USDA reports
+  const agReports = [...todayReports, ...upcomingReports].filter(r =>
+    r.category === 'agriculture' || r.shortName?.toLowerCase().includes('usda')
+  );
+  if (agReports.length > 0) {
+    const affectedAg = ['ZC', 'ZS', 'ZW'].filter(s => !trending.find(t => t.symbol === s));
+    for (const symbol of affectedAg.slice(0, 2)) {
+      const config = EXTENDED_INSTRUMENTS[symbol];
+      if (config) {
+        trending.push({
+          symbol,
+          name: config.name,
+          category: config.category,
+          newsCount: 0,
+          highImpactCount: 1,
+          sentiment: 'neutral',
+          reason: `${agReports[0].shortName} ${agReports[0].isToday ? 'today' : 'upcoming'}`,
+          reportDriven: true,
+          report: agReports[0]
+        });
+      }
+    }
+  }
+
+  // Sort by news count + high impact
+  trending.sort((a, b) => (b.newsCount + b.highImpactCount * 2) - (a.newsCount + a.highImpactCount * 2));
+
+  return trending.slice(0, 5); // Return top 5 trending
 }
 
 /**
