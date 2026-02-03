@@ -4,12 +4,73 @@ import { calculateBias, calculateDXYStrength } from './yahooFinance.js';
 import { analyzeFredConditions } from './fred.js';
 import { getNewsForInstrument } from './finnhubNews.js';
 
+// Symbol keywords for matching news to instruments
+const NEWS_SYMBOL_KEYWORDS = {
+  ES: ['s&p', 'sp500', 'spx', 'equity', 'stock market', 'wall street', 'stocks', 'equities'],
+  NQ: ['nasdaq', 'tech', 'technology', 'software', 'ai ', 'semiconductor', 'chips', 'apple', 'microsoft', 'google', 'amazon', 'meta', 'nvidia', 'tesla', 'magnificent'],
+  YM: ['dow', 'djia', 'industrial', 'blue chip'],
+  RTY: ['russell', 'small cap', 'small-cap', 'regional bank'],
+  CL: ['oil', 'crude', 'wti', 'brent', 'opec', 'petroleum', 'energy', 'gasoline', 'drilling'],
+  GC: ['gold', 'precious metal', 'bullion', 'safe haven'],
+  ZN: ['treasury', 'bond', 'yield', 'interest rate', 'fed ', 'federal reserve', 'fomc', 'powell', 'rate cut', 'rate hike'],
+  DX: ['dollar', 'usd', 'greenback', 'currency', 'forex', 'dxy'],
+  '6E': ['euro', 'eur', 'ecb', 'eurozone', 'lagarde'],
+  '6J': ['yen', 'jpy', 'bank of japan', 'boj', 'japan'],
+  '6B': ['pound', 'gbp', 'sterling', 'bank of england', 'boe', 'uk economy', 'britain'],
+  NG: ['natural gas', 'natgas', 'lng', 'heating']
+};
+
+/**
+ * Extract news sentiment for a specific instrument from analyzed news
+ */
+function getNewsSentimentForInstrument(newsData, symbol) {
+  if (!newsData || !Array.isArray(newsData) || newsData.length === 0) {
+    return { count: 0, bullish: 0, bearish: 0, neutral: 0, topHeadline: null, sentiment: 'neutral' };
+  }
+
+  const keywords = NEWS_SYMBOL_KEYWORDS[symbol] || [];
+  const relevantNews = newsData.filter(item => {
+    // Check if news affects this instrument
+    if (item.affectedInstruments?.includes(symbol) || item.symbols?.includes(symbol)) {
+      return true;
+    }
+    // Fallback: check keywords in headline
+    const headline = (item.headline || '').toLowerCase();
+    return keywords.some(kw => headline.includes(kw));
+  });
+
+  const bullish = relevantNews.filter(n => n.bias === 'bullish').length;
+  const bearish = relevantNews.filter(n => n.bias === 'bearish').length;
+  const neutral = relevantNews.length - bullish - bearish;
+
+  let sentiment = 'neutral';
+  if (bullish > bearish + 1) sentiment = 'bullish';
+  else if (bearish > bullish + 1) sentiment = 'bearish';
+  else if (bullish > bearish) sentiment = 'slightly bullish';
+  else if (bearish > bullish) sentiment = 'slightly bearish';
+
+  // Get top headline (highest impact/relevance)
+  const topNews = relevantNews
+    .filter(n => n.impact === 'HIGH' || n.relevance >= 7)
+    .sort((a, b) => (b.relevance || 5) - (a.relevance || 5))[0];
+
+  return {
+    count: relevantNews.length,
+    bullish,
+    bearish,
+    neutral,
+    topHeadline: topNews?.headline || null,
+    topHeadlineBias: topNews?.bias || null,
+    sentiment
+  };
+}
+
 export function buildDashboardResponse(futuresData, economicData, fredData, polygonData, currencyData, internationalData, newsData, sectorData, mag7Data, mag7NewsData, treasuryYieldsData, cryptoData, expectationMeters) {
   const now = new Date();
   const vixLevel = futuresData?.VIX?.price || 15;
 
-  // Build instruments object with bias analysis
-  const instruments = buildInstruments(futuresData, vixLevel, fredData);
+  // Build instruments object with bias analysis (now includes news sentiment)
+  const instruments = buildInstruments(futuresData, vixLevel, fredData, newsData);
 
   // Build instruments grouped by sector
   const instrumentsBySector = buildInstrumentsBySector(futuresData, vixLevel, fredData);
@@ -96,19 +157,19 @@ export function buildDashboardResponse(futuresData, economicData, fredData, poly
   };
 }
 
-function buildInstruments(futuresData, vixLevel, fredData) {
+function buildInstruments(futuresData, vixLevel, fredData, newsData = []) {
   const instruments = {};
   const fredConditions = analyzeFredConditions(fredData);
 
-  // Instrument-specific reason generators
+  // Instrument-specific reason generators - now include news sentiment
   const reasonGenerators = {
-    ES: (data, bias) => generateESReasons(data, bias, vixLevel, fredConditions),
-    NQ: (data, bias) => generateNQReasons(data, bias, vixLevel, fredConditions),
-    YM: (data, bias) => generateYMReasons(data, bias, vixLevel, fredConditions),
-    RTY: (data, bias) => generateRTYReasons(data, bias, vixLevel, fredConditions),
-    CL: (data, bias) => generateCLReasons(data, bias),
-    GC: (data, bias) => generateGCReasons(data, bias, vixLevel, fredConditions),
-    ZN: (data, bias) => generateZNReasons(data, bias, fredConditions)
+    ES: (data, bias, newsSentiment) => generateESReasons(data, bias, vixLevel, fredConditions, newsSentiment),
+    NQ: (data, bias, newsSentiment) => generateNQReasons(data, bias, vixLevel, fredConditions, newsSentiment),
+    YM: (data, bias, newsSentiment) => generateYMReasons(data, bias, vixLevel, fredConditions, newsSentiment),
+    RTY: (data, bias, newsSentiment) => generateRTYReasons(data, bias, vixLevel, fredConditions, newsSentiment),
+    CL: (data, bias, newsSentiment) => generateCLReasons(data, bias, newsSentiment),
+    GC: (data, bias, newsSentiment) => generateGCReasons(data, bias, vixLevel, fredConditions, newsSentiment),
+    ZN: (data, bias, newsSentiment) => generateZNReasons(data, bias, fredConditions, newsSentiment)
   };
 
   const symbolOrder = ['ES', 'NQ', 'YM', 'RTY', 'CL', 'GC', 'ZN'];
@@ -117,7 +178,8 @@ function buildInstruments(futuresData, vixLevel, fredData) {
     const data = futuresData[symbol];
     if (data) {
       const bias = calculateBias(data, vixLevel);
-      const reasons = reasonGenerators[symbol]?.(data, bias) || ['Market conditions apply'];
+      const newsSentiment = getNewsSentimentForInstrument(newsData, symbol);
+      const reasons = reasonGenerators[symbol]?.(data, bias, newsSentiment) || ['Market conditions apply'];
 
       instruments[symbol] = {
         name: data.name,
@@ -125,7 +187,8 @@ function buildInstruments(futuresData, vixLevel, fredData) {
         price: data.price,
         change: data.change,
         changePercent: data.changePercent,
-        reasons: reasons
+        reasons: reasons,
+        newsSentiment: newsSentiment
       };
     }
   });
@@ -405,80 +468,177 @@ function generateEarningsFromContext(date) {
   return [];
 }
 
-// Instrument-specific reason generators
-function generateESReasons(data, bias, vixLevel, fredConditions) {
+// Instrument-specific reason generators - now include AI-analyzed news sentiment
+function generateESReasons(data, bias, vixLevel, fredConditions, newsSentiment = {}) {
   const reasons = [];
 
+  // News-driven reasons (prioritize AI-analyzed news)
+  if (newsSentiment.count > 0) {
+    if (newsSentiment.sentiment === 'bullish' || newsSentiment.sentiment === 'slightly bullish') {
+      reasons.push(`News sentiment positive (${newsSentiment.bullish} bullish headlines)`);
+    } else if (newsSentiment.sentiment === 'bearish' || newsSentiment.sentiment === 'slightly bearish') {
+      reasons.push(`News sentiment negative (${newsSentiment.bearish} bearish headlines)`);
+    }
+    if (newsSentiment.topHeadline) {
+      const shortHeadline = newsSentiment.topHeadline.length > 60
+        ? newsSentiment.topHeadline.slice(0, 57) + '...'
+        : newsSentiment.topHeadline;
+      reasons.push(`Key: "${shortHeadline}"`);
+    }
+  }
+
+  // Market data reasons
   if (data.changePercent < -0.5) reasons.push('Selling pressure in broad market');
   if (data.changePercent > 0.5) reasons.push('Broad market strength');
-  if (vixLevel > 20) reasons.push('Elevated volatility weighing on sentiment');
-  if (fredConditions.rateEnvironment === 'restrictive') reasons.push('Restrictive Fed policy');
-  if (data.price < data.previousClose) reasons.push('Trading below prior close');
+  if (vixLevel > 20) reasons.push(`Elevated VIX (${vixLevel.toFixed(1)}) weighing on sentiment`);
+  if (vixLevel < 14) reasons.push(`Low VIX (${vixLevel.toFixed(1)}) supporting risk appetite`);
+  if (fredConditions.rateEnvironment === 'restrictive') reasons.push('Restrictive Fed policy backdrop');
 
-  return reasons.length > 0 ? reasons.slice(0, 3) : ['Tracking broader market conditions'];
+  return reasons.length > 0 ? reasons.slice(0, 4) : ['Tracking broader market conditions'];
 }
 
-function generateNQReasons(data, bias, vixLevel, fredConditions) {
+function generateNQReasons(data, bias, vixLevel, fredConditions, newsSentiment = {}) {
   const reasons = [];
 
+  // News-driven reasons
+  if (newsSentiment.count > 0) {
+    if (newsSentiment.sentiment === 'bullish' || newsSentiment.sentiment === 'slightly bullish') {
+      reasons.push(`Tech news positive (${newsSentiment.bullish} bullish)`);
+    } else if (newsSentiment.sentiment === 'bearish' || newsSentiment.sentiment === 'slightly bearish') {
+      reasons.push(`Tech news negative (${newsSentiment.bearish} bearish)`);
+    }
+    if (newsSentiment.topHeadline) {
+      const shortHeadline = newsSentiment.topHeadline.length > 60
+        ? newsSentiment.topHeadline.slice(0, 57) + '...'
+        : newsSentiment.topHeadline;
+      reasons.push(`Key: "${shortHeadline}"`);
+    }
+  }
+
+  // Market data reasons
   if (data.changePercent < -0.5) reasons.push('Tech sector weakness');
   if (data.changePercent > 0.5) reasons.push('Tech sector leadership');
   if (fredConditions.rateEnvironment === 'restrictive') reasons.push('Growth stocks sensitive to rates');
   if (vixLevel > 18) reasons.push('Risk-off rotation from growth');
 
-  return reasons.length > 0 ? reasons.slice(0, 3) : ['Tech sentiment in focus'];
+  return reasons.length > 0 ? reasons.slice(0, 4) : ['Tech sentiment in focus'];
 }
 
-function generateYMReasons(data, bias, vixLevel, fredConditions) {
+function generateYMReasons(data, bias, vixLevel, fredConditions, newsSentiment = {}) {
   const reasons = [];
+
+  // News-driven reasons
+  if (newsSentiment.count > 0 && newsSentiment.topHeadline) {
+    const shortHeadline = newsSentiment.topHeadline.length > 60
+      ? newsSentiment.topHeadline.slice(0, 57) + '...'
+      : newsSentiment.topHeadline;
+    reasons.push(`News: "${shortHeadline}"`);
+  }
 
   if (Math.abs(data.changePercent) < 0.3) reasons.push('Value stocks holding steady');
   if (data.changePercent > 0) reasons.push('Defensive rotation supportive');
   if (data.changePercent < -0.3) reasons.push('Cyclical concerns');
 
-  return reasons.length > 0 ? reasons.slice(0, 3) : ['Blue chip stability'];
+  return reasons.length > 0 ? reasons.slice(0, 4) : ['Blue chip stability'];
 }
 
-function generateRTYReasons(data, bias, vixLevel, fredConditions) {
+function generateRTYReasons(data, bias, vixLevel, fredConditions, newsSentiment = {}) {
   const reasons = [];
+
+  // News-driven reasons
+  if (newsSentiment.count > 0) {
+    if (newsSentiment.sentiment === 'bearish') {
+      reasons.push(`Regional/small cap news negative (${newsSentiment.bearish} bearish)`);
+    } else if (newsSentiment.sentiment === 'bullish') {
+      reasons.push(`Small cap news positive (${newsSentiment.bullish} bullish)`);
+    }
+  }
 
   reasons.push('Small caps sensitive to rates');
   if (data.changePercent < -0.5) reasons.push('Risk-off hitting small caps');
-  if (fredConditions.rateEnvironment === 'restrictive') reasons.push('Higher rates pressure on small caps');
+  if (vixLevel > 20) reasons.push(`High VIX (${vixLevel.toFixed(1)}) pressuring small caps`);
+  if (fredConditions.rateEnvironment === 'restrictive') reasons.push('Higher rates pressure');
 
-  return reasons.slice(0, 3);
+  return reasons.slice(0, 4);
 }
 
-function generateCLReasons(data, bias) {
+function generateCLReasons(data, bias, newsSentiment = {}) {
   const reasons = [];
+
+  // News-driven reasons (geopolitical, supply, OPEC)
+  if (newsSentiment.count > 0) {
+    if (newsSentiment.sentiment === 'bullish') {
+      reasons.push(`Energy news bullish (${newsSentiment.bullish} positive)`);
+    } else if (newsSentiment.sentiment === 'bearish') {
+      reasons.push(`Energy news bearish (${newsSentiment.bearish} negative)`);
+    }
+    if (newsSentiment.topHeadline) {
+      const shortHeadline = newsSentiment.topHeadline.length > 55
+        ? newsSentiment.topHeadline.slice(0, 52) + '...'
+        : newsSentiment.topHeadline;
+      reasons.push(`Key: "${shortHeadline}"`);
+    }
+  }
 
   if (data.changePercent > 1) reasons.push('Supply concerns supporting prices');
   if (data.changePercent < -1) reasons.push('Demand concerns weighing');
-  reasons.push('Geopolitical headlines in focus');
-  reasons.push('Inventory data watch');
+  if (newsSentiment.count === 0) {
+    reasons.push('Geopolitical headlines in focus');
+    reasons.push('Inventory data watch');
+  }
 
-  return reasons.slice(0, 3);
+  return reasons.slice(0, 4);
 }
 
-function generateGCReasons(data, bias, vixLevel, fredConditions) {
+function generateGCReasons(data, bias, vixLevel, fredConditions, newsSentiment = {}) {
   const reasons = [];
 
-  if (vixLevel > 18) reasons.push('Safe haven demand');
-  if (data.changePercent > 0.5) reasons.push('Flight to quality bid');
+  // News-driven reasons (safe haven, inflation, Fed)
+  if (newsSentiment.count > 0) {
+    if (newsSentiment.sentiment === 'bullish') {
+      reasons.push(`Gold news bullish (${newsSentiment.bullish} positive)`);
+    } else if (newsSentiment.sentiment === 'bearish') {
+      reasons.push(`Gold news bearish (${newsSentiment.bearish} negative)`);
+    }
+    if (newsSentiment.topHeadline) {
+      const shortHeadline = newsSentiment.topHeadline.length > 55
+        ? newsSentiment.topHeadline.slice(0, 52) + '...'
+        : newsSentiment.topHeadline;
+      reasons.push(`Key: "${shortHeadline}"`);
+    }
+  }
+
+  if (vixLevel > 20) reasons.push(`Safe haven demand (VIX: ${vixLevel.toFixed(1)})`);
+  if (vixLevel > 18 && data.changePercent > 0.3) reasons.push('Flight to quality bid');
   if (fredConditions.rateEnvironment === 'restrictive') reasons.push('Real yield considerations');
 
-  return reasons.length > 0 ? reasons.slice(0, 3) : ['Precious metals tracking risk sentiment'];
+  return reasons.length > 0 ? reasons.slice(0, 4) : ['Precious metals tracking risk sentiment'];
 }
 
-function generateZNReasons(data, bias, fredConditions) {
+function generateZNReasons(data, bias, fredConditions, newsSentiment = {}) {
   const reasons = [];
+
+  // News-driven reasons (Fed, rates, inflation)
+  if (newsSentiment.count > 0) {
+    if (newsSentiment.topHeadline) {
+      const shortHeadline = newsSentiment.topHeadline.length > 55
+        ? newsSentiment.topHeadline.slice(0, 52) + '...'
+        : newsSentiment.topHeadline;
+      reasons.push(`Key: "${shortHeadline}"`);
+    }
+    if (newsSentiment.sentiment === 'bullish') {
+      reasons.push('Bond-bullish news flow (yields lower)');
+    } else if (newsSentiment.sentiment === 'bearish') {
+      reasons.push('Bond-bearish news flow (yields higher)');
+    }
+  }
 
   if (fredConditions.yieldCurve === 'inverted') reasons.push('Inverted yield curve');
   reasons.push('Fed policy expectations in focus');
-  if (data.changePercent > 0) reasons.push('Flight to quality bid');
-  if (data.changePercent < 0) reasons.push('Yields rising on growth optimism');
+  if (data.changePercent > 0.1) reasons.push('Flight to quality bid');
+  if (data.changePercent < -0.1) reasons.push('Yields rising on growth optimism');
 
-  return reasons.slice(0, 3);
+  return reasons.slice(0, 4);
 }
 
 // Currency instruments builder

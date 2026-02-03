@@ -139,27 +139,35 @@ app.get('/api/dashboard', async (req, res) => {
     const treasuryYields = treasuryYieldsData.status === 'fulfilled' ? treasuryYieldsData.value : {};
     const crypto = cryptoData.status === 'fulfilled' ? cryptoData.value : {};
 
-    // Merge news from Finnhub and NewsAPI, prioritizing by timestamp
-    // Remove duplicates based on headline similarity
+    // Fetch Claude AI analyzed news from all sources (Google Sheets, NewsAPI, Finnhub)
+    // This provides bias, relevance, and sentiment for each headline
+    let analyzedNews = [];
+    try {
+      analyzedNews = await analyzeAllSourcesNews({ lastHours: 2 });
+      console.log(`Analyzed news: ${analyzedNews.length} items with Claude AI analysis`);
+    } catch (err) {
+      console.warn('Could not fetch analyzed news, using raw news:', err.message);
+    }
+
+    // Merge raw news as fallback (for display in news feed)
     const seenHeadlines = new Set();
     const allNews = [...finnhubNews, ...newsApiNews]
       .filter(item => {
-        // Simple deduplication based on headline
         const normalizedHeadline = (item.headline || item.title || '').toLowerCase().slice(0, 50);
         if (seenHeadlines.has(normalizedHeadline)) return false;
         seenHeadlines.add(normalizedHeadline);
         return true;
       })
       .sort((a, b) => {
-        // Sort by timestamp, most recent first
         const timeA = new Date(a.timestamp || 0).getTime();
         const timeB = new Date(b.timestamp || 0).getTime();
         return timeB - timeA;
       })
-      .slice(0, 20); // Limit to 20 news items
+      .slice(0, 20);
 
-    const news = allNews;
-    console.log(`Merged news: ${finnhubNews.length} from Finnhub + ${newsApiNews.length} from NewsAPI = ${news.length} total`);
+    // Use analyzed news if available, otherwise fall back to raw news
+    const news = analyzedNews.length > 0 ? analyzedNews : allNews;
+    console.log(`Using ${analyzedNews.length > 0 ? 'analyzed' : 'raw'} news: ${news.length} items`);
 
     // Calculate expectation meters
     const expectationMeters = calculateExpectationMeters(futures, currencies, news);
