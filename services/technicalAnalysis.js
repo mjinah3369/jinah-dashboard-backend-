@@ -154,6 +154,56 @@ async function fetchHistoricalData(symbol, days = 60) {
 }
 
 /**
+ * Calculate ATR (Average True Range)
+ * @param {Object[]} candles - Array of {high, low, close} objects
+ * @param {number} period - ATR period (default 20)
+ * @returns {Object} - ATR data
+ */
+function calculateATR(candles, period = 20) {
+  if (candles.length < period + 1) return null;
+
+  const trueRanges = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const current = candles[i];
+    const previous = candles[i - 1];
+
+    // True Range = max of:
+    // 1. Current High - Current Low
+    // 2. |Current High - Previous Close|
+    // 3. |Current Low - Previous Close|
+    const tr = Math.max(
+      current.high - current.low,
+      Math.abs(current.high - previous.close),
+      Math.abs(current.low - previous.close)
+    );
+    trueRanges.push(tr);
+  }
+
+  // Calculate ATR as SMA of True Ranges for the period
+  const recentTRs = trueRanges.slice(-period);
+  const atr = recentTRs.reduce((sum, tr) => sum + tr, 0) / period;
+
+  // Today's range (last candle)
+  const todayCandle = candles[candles.length - 1];
+  const todayRange = todayCandle.high - todayCandle.low;
+
+  // Remaining range potential
+  const remainingRange = Math.max(0, atr - todayRange);
+  const percentUsed = (todayRange / atr) * 100;
+
+  return {
+    atr: parseFloat(atr.toFixed(2)),
+    todayRange: parseFloat(todayRange.toFixed(2)),
+    todayHigh: parseFloat(todayCandle.high.toFixed(2)),
+    todayLow: parseFloat(todayCandle.low.toFixed(2)),
+    remainingRange: parseFloat(remainingRange.toFixed(2)),
+    percentUsed: parseFloat(percentUsed.toFixed(1)),
+    period
+  };
+}
+
+/**
  * Calculate all technical indicators for a symbol
  * @param {string} symbol - Yahoo Finance symbol
  * @returns {Object} - Technical analysis results
@@ -171,10 +221,16 @@ async function analyzeTechnicals(symbol) {
   const { closes, candles } = historical;
   const currentPrice = closes[closes.length - 1];
 
-  // Calculate EMAs
-  const ema9 = calculateEMA(closes, 9);
+  // Calculate EMAs (13 and 21 for day trading)
+  const ema13 = calculateEMA(closes, 13);
   const ema21 = calculateEMA(closes, 21);
+
+  // Keep ema9 and ema50 for backward compatibility but also add ema13
+  const ema9 = calculateEMA(closes, 9);
   const ema50 = calculateEMA(closes, 50);
+
+  // Calculate ATR (20-day)
+  const atrData = calculateATR(candles, 20);
 
   // Calculate ADX
   const adxData = calculateADX(candles, 14);
@@ -233,12 +289,14 @@ async function analyzeTechnicals(symbol) {
     currentPrice,
     ema: {
       ema9,
+      ema13,
       ema21,
       ema50,
       trend: emaTrend,
       signal: emaSignal,
-      priceVsEma9: currentPrice > ema9 ? 'Above' : 'Below',
+      priceVsEma13: currentPrice > ema13 ? 'Above' : 'Below',
       priceVsEma21: currentPrice > ema21 ? 'Above' : 'Below',
+      priceVsEma9: currentPrice > ema9 ? 'Above' : 'Below',
       priceVsEma50: currentPrice > ema50 ? 'Above' : 'Below'
     },
     adx: adxData ? {
@@ -248,8 +306,27 @@ async function analyzeTechnicals(symbol) {
       strength: trendStrength,
       direction: trendDirection
     } : null,
-    summary: generateTechnicalSummary(emaTrend, trendStrength, trendDirection, adxData)
+    atr: atrData,
+    summary: generateTechnicalSummary(emaTrend, trendStrength, trendDirection, adxData),
+    atrSummary: atrData ? generateATRSummary(atrData) : null
   };
+}
+
+/**
+ * Generate ATR summary for day traders
+ */
+function generateATRSummary(atrData) {
+  const { atr, todayRange, remainingRange, percentUsed } = atrData;
+
+  if (percentUsed >= 90) {
+    return `Daily range nearly exhausted (${percentUsed.toFixed(0)}% of ATR used). Limited movement expected. Consider reducing size or waiting for tomorrow.`;
+  } else if (percentUsed >= 70) {
+    return `Most of daily range used (${percentUsed.toFixed(0)}%). About ${remainingRange.toFixed(1)} points remaining. Be selective with entries.`;
+  } else if (percentUsed >= 50) {
+    return `Half of daily range used. Approximately ${remainingRange.toFixed(1)} points of movement still possible based on 20-day ATR.`;
+  } else {
+    return `Early in daily range (${percentUsed.toFixed(0)}% used). Expecting ${remainingRange.toFixed(1)} more points of movement. Good opportunity window.`;
+  }
 }
 
 /**
@@ -471,37 +548,40 @@ async function getChartData(symbol, interval = '1d') {
       }
     }
 
-    // Calculate EMAs for overlay
+    // Calculate EMAs for overlay (13 and 21 for day trading)
     const closes = candles.map(c => c.close);
-    const ema9Values = calculateEMAArray(closes, 9);
+    const ema13Values = calculateEMAArray(closes, 13);
     const ema21Values = calculateEMAArray(closes, 21);
-    const ema50Values = calculateEMAArray(closes, 50);
 
     // Add EMA data points
-    const ema9Data = [];
+    const ema13Data = [];
     const ema21Data = [];
-    const ema50Data = [];
 
     for (let i = 0; i < candles.length; i++) {
-      if (ema9Values[i] !== null) {
-        ema9Data.push({ time: candles[i].time, value: ema9Values[i] });
+      if (ema13Values[i] !== null) {
+        ema13Data.push({ time: candles[i].time, value: ema13Values[i] });
       }
       if (ema21Values[i] !== null) {
         ema21Data.push({ time: candles[i].time, value: ema21Values[i] });
       }
-      if (ema50Values[i] !== null) {
-        ema50Data.push({ time: candles[i].time, value: ema50Values[i] });
-      }
     }
+
+    // Calculate ATR for the chart period
+    const fullCandles = candles.map((c, i) => ({
+      high: c.high,
+      low: c.low,
+      close: c.close
+    }));
+    const atrData = calculateATR(fullCandles, 20);
 
     return {
       symbol,
       interval: config.interval,
       intervalLabel: config.label,
       candles,
-      ema9: ema9Data,
+      ema13: ema13Data,
       ema21: ema21Data,
-      ema50: ema50Data,
+      atr: atrData,
       lastUpdate: new Date().toISOString()
     };
   } catch (error) {
@@ -535,6 +615,7 @@ function calculateEMAArray(prices, period) {
 export {
   calculateEMA,
   calculateADX,
+  calculateATR,
   fetchHistoricalData,
   analyzeTechnicals,
   analyzeAllInstruments,
