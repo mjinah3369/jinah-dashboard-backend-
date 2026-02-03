@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { analyzeAllSourcesNews, getNewsSentimentSummary } from './newsAnalysis.js';
 import { fetchEarningsCalendar, fetchEconomicCalendar } from './alphaVantage.js';
 import { fetchEnergyReports, fetchCentralBankCalendar, buildReportsCalendar } from './fundamentalReports.js';
+import { analyzeTechnicals, YAHOO_SYMBOLS } from './technicalAnalysis.js';
 
 // Initialize Anthropic client
 let anthropic = null;
@@ -703,6 +704,27 @@ export async function generateFinalAnalysis(marketData, options = {}) {
   const upcomingReports = energyReports.filter(r => r.isTomorrow).slice(0, 3);
   const nextFOMC = centralBankEvents.find(e => e.shortName === 'FOMC');
 
+  // Fetch technical analysis for all instruments
+  let technicals = {};
+  try {
+    const symbols = ['ES', 'NQ', 'YM', 'RTY', 'GC', 'CL'];
+    const techPromises = symbols.map(async (symbol) => {
+      const yahooSymbol = YAHOO_SYMBOLS[symbol];
+      if (yahooSymbol) {
+        const tech = await analyzeTechnicals(yahooSymbol);
+        return { symbol, tech };
+      }
+      return { symbol, tech: null };
+    });
+    const techResults = await Promise.all(techPromises);
+    techResults.forEach(({ symbol, tech }) => {
+      technicals[symbol] = tech;
+    });
+    console.log('Technical analysis fetched for all instruments');
+  } catch (err) {
+    console.warn('Could not fetch technical analysis:', err.message);
+  }
+
   // Calculate bias for each instrument
   const esResult = calculateESBias(marketData, newsSentiment);
   const nqResult = calculateNQBias(marketData, newsSentiment, esResult);
@@ -718,7 +740,8 @@ export async function generateFinalAnalysis(marketData, options = {}) {
     allNews,
     earnings,
     economicReleases,
-    { energyReports: todayReports, upcomingReports, nextFOMC }
+    { energyReports: todayReports, upcomingReports, nextFOMC },
+    technicals
   );
 
   // Build final response
@@ -774,7 +797,7 @@ export async function generateFinalAnalysis(marketData, options = {}) {
 /**
  * Build detailed popup data for each instrument
  */
-function buildInstrumentDetails(results, marketData, allNews, earnings, economicReleases, reports) {
+function buildInstrumentDetails(results, marketData, allNews, earnings, economicReleases, reports, technicals = {}) {
   const details = {};
 
   // News keywords for each instrument
@@ -785,6 +808,16 @@ function buildInstrumentDetails(results, marketData, allNews, earnings, economic
     RTY: ['Russell', 'small cap', 'regional bank', 'IWM', 'small business', 'domestic'],
     GC: ['gold', 'precious metal', 'safe haven', 'inflation hedge', 'central bank buying', 'jewelry', 'GLD'],
     CL: ['oil', 'crude', 'WTI', 'Brent', 'OPEC', 'energy', 'gasoline', 'refinery', 'drilling', 'EIA', 'petroleum', 'inventory']
+  };
+
+  // Relevant sectors for each instrument
+  const INSTRUMENT_SECTORS = {
+    ES: ['XLF', 'XLK', 'XLV', 'XLE', 'XLI', 'XLY', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC'],
+    NQ: ['XLK', 'XLC'],
+    YM: ['XLF', 'XLI', 'XLV'],
+    RTY: ['XLF', 'XLI', 'XLRE'],
+    GC: [],
+    CL: ['XLE']
   };
 
   // Build details for each instrument
@@ -826,8 +859,53 @@ function buildInstrumentDetails(results, marketData, allNews, earnings, economic
     // Get OPEC reports for CL
     const opecReports = symbol === 'CL' ? reports.energyReports : [];
 
+    // Get relevant sectors for this instrument
+    const relevantSectorSymbols = INSTRUMENT_SECTORS[symbol] || [];
+    const relevantSectors = relevantSectorSymbols
+      .map(sectorSymbol => {
+        const sector = marketData.sectors?.[sectorSymbol];
+        if (sector) {
+          return {
+            symbol: sectorSymbol,
+            name: sector.name || sectorSymbol,
+            changePercent: sector.changePercent || 0,
+            isLeader: sector.isLeader || false,
+            isLaggard: sector.isLaggard || false
+          };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.changePercent - a.changePercent);
+
+    // Get technical analysis for this instrument
+    const techData = technicals[symbol];
+    const technicalAnalysis = techData?.available ? {
+      currentPrice: techData.currentPrice,
+      ema9: techData.ema?.ema9,
+      ema21: techData.ema?.ema21,
+      ema50: techData.ema?.ema50,
+      emaTrend: techData.ema?.trend,
+      emaSignal: techData.ema?.signal,
+      priceVsEma9: techData.ema?.priceVsEma9,
+      priceVsEma21: techData.ema?.priceVsEma21,
+      priceVsEma50: techData.ema?.priceVsEma50,
+      adx: techData.adx?.value,
+      adxStrength: techData.adx?.strength,
+      adxDirection: techData.adx?.direction,
+      diPlus: techData.adx?.diPlus,
+      diMinus: techData.adx?.diMinus,
+      summary: techData.summary
+    } : null;
+
+    // Build sentiment summary (3-4 lines)
+    const sentimentSummary = buildSentimentSummary(symbol, result, marketData, relevantNews, relevantSectors, techData);
+
     details[symbol] = {
+      sentimentSummary,
       factorExplanations,
+      relevantSectors,
+      technicalAnalysis,
       relevantNews: relevantNews.map(n => ({
         headline: n.headline || n.title,
         source: n.source,
@@ -859,6 +937,78 @@ function buildInstrumentDetails(results, marketData, allNews, earnings, economic
   }
 
   return details;
+}
+
+/**
+ * Build a 3-4 line sentiment summary for the instrument
+ */
+function buildSentimentSummary(symbol, result, marketData, relevantNews, relevantSectors, techData) {
+  const lines = [];
+  const { bias, confidence, factors } = result;
+
+  // Line 1: Overall bias statement
+  const biasDescription = {
+    'BULLISH': 'showing strong bullish momentum',
+    'SLIGHT BULLISH': 'leaning bullish with moderate conviction',
+    'NEUTRAL': 'in a neutral stance with mixed signals',
+    'SLIGHT BEARISH': 'leaning bearish with some caution',
+    'BEARISH': 'showing strong bearish pressure'
+  };
+  lines.push(`${INSTRUMENT_CONFIG[symbol]?.name || symbol} is ${biasDescription[bias] || 'neutral'} with ${confidence}% confidence.`);
+
+  // Line 2: Key drivers
+  const keyDrivers = [];
+  if (factors.VIX?.score > 0) keyDrivers.push('low VIX supporting risk appetite');
+  if (factors.VIX?.score < 0) keyDrivers.push('elevated VIX signaling caution');
+  if (factors.ZN?.score > 0) keyDrivers.push('falling yields');
+  if (factors.ZN?.score < 0) keyDrivers.push('rising yields');
+  if (factors.DXY?.score > 0) keyDrivers.push('dollar weakness');
+  if (factors.DXY?.score < 0) keyDrivers.push('dollar strength');
+  if (factors.Mag7?.score > 0) keyDrivers.push('tech leadership');
+  if (factors.Mag7?.score < 0) keyDrivers.push('tech weakness');
+  if (factors.News?.score > 0) keyDrivers.push('positive news flow');
+  if (factors.News?.score < 0) keyDrivers.push('negative headlines');
+
+  if (keyDrivers.length > 0) {
+    lines.push(`Key drivers: ${keyDrivers.slice(0, 3).join(', ')}.`);
+  }
+
+  // Line 3: Sector performance (if applicable)
+  if (relevantSectors && relevantSectors.length > 0) {
+    const leaders = relevantSectors.filter(s => s.changePercent > 0.3);
+    const laggards = relevantSectors.filter(s => s.changePercent < -0.3);
+
+    if (leaders.length > 0) {
+      lines.push(`Sector strength: ${leaders.slice(0, 2).map(s => `${s.name} (+${s.changePercent.toFixed(1)}%)`).join(', ')}.`);
+    } else if (laggards.length > 0) {
+      lines.push(`Sector weakness: ${laggards.slice(0, 2).map(s => `${s.name} (${s.changePercent.toFixed(1)}%)`).join(', ')}.`);
+    }
+  }
+
+  // Line 4: Technical confirmation or divergence
+  if (techData?.available) {
+    const techBias = techData.ema?.signal > 0 ? 'bullish' : techData.ema?.signal < 0 ? 'bearish' : 'neutral';
+    const fundamentalBias = bias.toLowerCase().includes('bullish') ? 'bullish' : bias.toLowerCase().includes('bearish') ? 'bearish' : 'neutral';
+
+    if (techBias === fundamentalBias) {
+      lines.push(`Technicals confirm: price ${techData.ema?.trend?.toLowerCase() || 'neutral'}, ADX at ${techData.adx?.value || 'N/A'} (${techData.adx?.strength || 'weak'} trend).`);
+    } else {
+      lines.push(`Technical divergence: price ${techData.ema?.trend?.toLowerCase() || 'neutral'} vs ${fundamentalBias} fundamentals. Watch for resolution.`);
+    }
+  }
+
+  // Line 5: News summary if significant
+  if (relevantNews && relevantNews.length > 0) {
+    const bullishNews = relevantNews.filter(n => n.bias === 'bullish').length;
+    const bearishNews = relevantNews.filter(n => n.bias === 'bearish').length;
+    const highImpact = relevantNews.filter(n => n.impact === 'HIGH').length;
+
+    if (highImpact > 0 || relevantNews.length >= 3) {
+      lines.push(`News flow: ${relevantNews.length} stories (${bullishNews} bullish, ${bearishNews} bearish${highImpact > 0 ? `, ${highImpact} high-impact` : ''}).`);
+    }
+  }
+
+  return lines.slice(0, 4).join(' ');
 }
 
 /**
