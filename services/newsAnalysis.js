@@ -1,10 +1,12 @@
 /**
  * News Analysis Service
  * Analyzes news headlines using Claude AI for trading insights
+ * Now supports unified news from all sources (Google Sheets, NewsAPI, Finnhub)
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { fetchGoogleSheetsNews, clearGoogleSheetsCache } from './googleSheets.js';
+import { fetchUnifiedNews, clearUnifiedNewsCache } from './unifiedNews.js';
 
 // Initialize Anthropic client
 let anthropic = null;
@@ -118,8 +120,9 @@ Return ONLY a valid JSON array with the analysis objects. No markdown, no explan
 
 /**
  * Analyze a batch of headlines using Claude
+ * Exported for use by other services (e.g., finalAnalysis.js)
  */
-async function analyzeHeadlinesBatch(headlines) {
+export async function analyzeHeadlinesBatch(headlines) {
   const client = getAnthropicClient();
 
   if (!client) {
@@ -338,5 +341,209 @@ export function getAnalysisCacheStatus() {
     cacheAge: fullAnalysisTime ? Date.now() - fullAnalysisTime : null,
     maxAge: ANALYSIS_CACHE_DURATION,
     hasApiKey: !!process.env.ANTHROPIC_API_KEY
+  };
+}
+
+// ============================================================================
+// UNIFIED NEWS ANALYSIS (All Sources with Claude AI)
+// ============================================================================
+
+// Cache for unified analyzed news
+let unifiedAnalysisCache = null;
+let unifiedAnalysisTime = null;
+const UNIFIED_ANALYSIS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Fetch and analyze news from ALL sources (Google Sheets, NewsAPI, Finnhub)
+ * This is the main function for comprehensive news analysis
+ */
+export async function analyzeAllSourcesNews(options = {}) {
+  const { forceRefresh = false, symbol = null, source = null, lastHours = null } = options;
+  const now = Date.now();
+
+  // Check if we can use cached unified analysis
+  if (!forceRefresh && unifiedAnalysisCache && unifiedAnalysisTime &&
+      (now - unifiedAnalysisTime) < UNIFIED_ANALYSIS_CACHE_DURATION) {
+    console.log('Returning cached unified analyzed news');
+    let results = unifiedAnalysisCache;
+
+    // Apply filters
+    if (symbol) {
+      results = results.filter(item =>
+        item.symbols?.includes(symbol) || item.affectedInstruments?.includes(symbol)
+      );
+    }
+    if (source) {
+      const normalizedSource = source.toLowerCase().replace(/\s+/g, '');
+      results = results.filter(item =>
+        item.source.toLowerCase().replace(/\s+/g, '').includes(normalizedSource)
+      );
+    }
+    if (lastHours) {
+      const cutoff = new Date(now - lastHours * 60 * 60 * 1000);
+      results = results.filter(item => new Date(item.timestamp) >= cutoff);
+    }
+
+    return results;
+  }
+
+  // Fetch unified news from all sources
+  const rawNews = await fetchUnifiedNews({ forceRefresh });
+
+  if (rawNews.length === 0) {
+    return [];
+  }
+
+  // Separate already-analyzed (cached) from new headlines
+  const toAnalyze = [];
+  const alreadyAnalyzed = [];
+
+  for (const item of rawNews) {
+    const hash = getHeadlineHash(item);
+    if (analysisCache.has(hash)) {
+      alreadyAnalyzed.push(analysisCache.get(hash));
+    } else {
+      toAnalyze.push(item);
+    }
+  }
+
+  console.log(`Unified news analysis: ${alreadyAnalyzed.length} cached, ${toAnalyze.length} to analyze`);
+
+  // Analyze new headlines in batches
+  let newlyAnalyzed = [];
+  if (toAnalyze.length > 0) {
+    // Process in batches of 10 to avoid token limits
+    const batchSize = 10;
+    for (let i = 0; i < toAnalyze.length; i += batchSize) {
+      const batch = toAnalyze.slice(i, i + batchSize);
+      const analyzed = await analyzeHeadlinesBatch(batch);
+
+      // Cache individual results
+      for (const item of analyzed) {
+        const hash = getHeadlineHash(item);
+        analysisCache.set(hash, item);
+      }
+
+      newlyAnalyzed = newlyAnalyzed.concat(analyzed);
+    }
+  }
+
+  // Combine and sort by timestamp
+  const allAnalyzed = [...alreadyAnalyzed, ...newlyAnalyzed]
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  // Cache full results
+  unifiedAnalysisCache = allAnalyzed;
+  unifiedAnalysisTime = now;
+
+  // Apply filters
+  let results = allAnalyzed;
+
+  if (symbol) {
+    results = results.filter(item =>
+      item.symbols?.includes(symbol) || item.affectedInstruments?.includes(symbol)
+    );
+  }
+  if (source) {
+    const normalizedSource = source.toLowerCase().replace(/\s+/g, '');
+    results = results.filter(item =>
+      item.source.toLowerCase().replace(/\s+/g, '').includes(normalizedSource)
+    );
+  }
+  if (lastHours) {
+    const cutoff = new Date(now - lastHours * 60 * 60 * 1000);
+    results = results.filter(item => new Date(item.timestamp) >= cutoff);
+  }
+
+  return results;
+}
+
+/**
+ * Get news sentiment summary for multiple instruments
+ * Used by final analysis service
+ */
+export async function getNewsSentimentSummary(options = {}) {
+  const { lastHours = 1 } = options;
+  const news = await analyzeAllSourcesNews({ lastHours });
+
+  const summary = {
+    total: news.length,
+    analyzed: news.filter(n => n.isAnalyzed).length,
+    byImpact: {
+      HIGH: news.filter(n => n.impact === 'HIGH').length,
+      MEDIUM: news.filter(n => n.impact === 'MEDIUM').length,
+      LOW: news.filter(n => n.impact === 'LOW').length
+    },
+    byBias: {
+      bullish: news.filter(n => n.bias === 'bullish').length,
+      bearish: news.filter(n => n.bias === 'bearish').length,
+      neutral: news.filter(n => n.bias === 'neutral').length
+    },
+    byInstrument: {},
+    byCategory: {},
+    topNews: news.filter(n => n.impact === 'HIGH' && n.relevance >= 7).slice(0, 5)
+  };
+
+  // Count by instrument
+  const instruments = ['ES', 'NQ', 'YM', 'RTY', 'GC', 'CL', 'ZN', 'DX'];
+  for (const instrument of instruments) {
+    const instrumentNews = news.filter(n =>
+      n.symbols?.includes(instrument) || n.affectedInstruments?.includes(instrument)
+    );
+    const bullish = instrumentNews.filter(n => n.bias === 'bullish').length;
+    const bearish = instrumentNews.filter(n => n.bias === 'bearish').length;
+
+    summary.byInstrument[instrument] = {
+      total: instrumentNews.length,
+      bullish,
+      bearish,
+      neutral: instrumentNews.length - bullish - bearish,
+      sentiment: bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral',
+      score: (bullish - bearish) / Math.max(1, instrumentNews.length)
+    };
+  }
+
+  // Count by category
+  const categories = ['Fed', 'Geopolitical', 'Economic', 'Earnings', 'Tech', 'Energy', 'Crypto', 'General'];
+  for (const category of categories) {
+    summary.byCategory[category] = news.filter(n => n.category === category).length;
+  }
+
+  return summary;
+}
+
+/**
+ * Force refresh unified news analysis
+ */
+export async function refreshUnifiedNewsAnalysis() {
+  clearGoogleSheetsCache();
+  clearUnifiedNewsCache();
+  analysisCache.clear();
+  unifiedAnalysisCache = null;
+  unifiedAnalysisTime = null;
+  lastFullAnalysis = null;
+  fullAnalysisTime = null;
+
+  console.log('All news analysis caches cleared, fetching fresh data...');
+
+  return await analyzeAllSourcesNews({ forceRefresh: true });
+}
+
+/**
+ * Get unified analysis cache status
+ */
+export function getUnifiedAnalysisCacheStatus() {
+  return {
+    cachedHeadlines: analysisCache.size,
+    hasUnifiedAnalysis: !!unifiedAnalysisCache,
+    unifiedItemCount: unifiedAnalysisCache?.length || 0,
+    unifiedCacheAge: unifiedAnalysisTime ? Date.now() - unifiedAnalysisTime : null,
+    maxAge: UNIFIED_ANALYSIS_CACHE_DURATION,
+    hasApiKey: !!process.env.ANTHROPIC_API_KEY,
+    sources: {
+      googleSheets: unifiedAnalysisCache?.filter(n => n.source === 'Google Sheets').length || 0,
+      newsApi: unifiedAnalysisCache?.filter(n => n.source === 'NewsAPI').length || 0,
+      finnhub: unifiedAnalysisCache?.filter(n => n.source === 'Finnhub').length || 0
+    }
   };
 }

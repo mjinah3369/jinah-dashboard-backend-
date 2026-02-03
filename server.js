@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks, fetchTreasuryYields, fetchCryptoPrices, calculateExpectationMeters } from './services/yahooFinance.js';
-import { fetchEconomicCalendar } from './services/alphaVantage.js';
+import { fetchEconomicCalendar, fetchEarningsCalendar } from './services/alphaVantage.js';
 import { fetchFredData } from './services/fred.js';
 import { fetchPolygonData } from './services/polygon.js';
 import { fetchFinnhubNews, fetchMag7News } from './services/finnhubNews.js';
@@ -50,8 +50,18 @@ import {
   fetchAnalyzedNews,
   fetchHighImpactNews,
   refreshNewsAnalysis,
-  getAnalysisCacheStatus
+  getAnalysisCacheStatus,
+  analyzeAllSourcesNews,
+  getNewsSentimentSummary,
+  refreshUnifiedNewsAnalysis,
+  getUnifiedAnalysisCacheStatus
 } from './services/newsAnalysis.js';
+import {
+  generateFinalAnalysis,
+  generateAISynthesis,
+  clearFinalAnalysisCache,
+  getFinalAnalysisCacheStatus
+} from './services/finalAnalysis.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -713,16 +723,21 @@ app.get('/api/news/raw', async (req, res) => {
   }
 });
 
-// Get AI-analyzed news (with optional symbol filter)
+// Get AI-analyzed news from ALL sources (Google Sheets + NewsAPI + Finnhub)
+// Supports filters: symbol, source, lastHours
 app.get('/api/news/analyzed', async (req, res) => {
   try {
-    const { symbol } = req.query;
-    const news = await fetchAnalyzedNews({ symbol: symbol?.toUpperCase() });
+    const { symbol, source, lastHours } = req.query;
+    const news = await analyzeAllSourcesNews({
+      symbol: symbol?.toUpperCase(),
+      source,
+      lastHours: lastHours ? parseInt(lastHours) : null
+    });
 
     res.json({
       count: news.length,
       news,
-      cache: getAnalysisCacheStatus(),
+      cache: getUnifiedAnalysisCacheStatus(),
       lastUpdate: new Date().toISOString()
     });
   } catch (error) {
@@ -754,15 +769,15 @@ app.get('/api/news/high-impact', async (req, res) => {
   }
 });
 
-// Force refresh - clear caches and re-analyze all news
+// Force refresh - clear caches and re-analyze all news from all sources
 app.post('/api/news/refresh', async (req, res) => {
   try {
-    const news = await refreshNewsAnalysis();
+    const news = await refreshUnifiedNewsAnalysis();
 
     res.json({
       success: true,
       count: news.length,
-      message: 'News cache cleared and re-analyzed',
+      message: 'All news caches cleared and re-analyzed',
       lastUpdate: new Date().toISOString()
     });
   } catch (error) {
@@ -779,8 +794,180 @@ app.get('/api/news/status', (req, res) => {
   res.json({
     sheets: getGoogleSheetsCacheStatus(),
     analysis: getAnalysisCacheStatus(),
+    unified: getUnifiedAnalysisCacheStatus(),
     lastUpdate: new Date().toISOString()
   });
+});
+
+// Get news sentiment summary (for final analysis)
+app.get('/api/news/sentiment', async (req, res) => {
+  try {
+    const { lastHours = 1 } = req.query;
+    const sentiment = await getNewsSentimentSummary({ lastHours: parseInt(lastHours) });
+
+    res.json({
+      ...sentiment,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('News sentiment error:', error);
+    res.status(500).json({
+      error: 'Failed to get news sentiment',
+      message: error.message
+    });
+  }
+});
+
+// ============================================================================
+// FINAL ANALYSIS ENDPOINT (Comprehensive Bias for 6 Instruments)
+// ============================================================================
+
+// Cache for market data (used by final analysis)
+let marketDataCache = null;
+let marketDataCacheTime = null;
+const MARKET_DATA_CACHE_DURATION = 2 * 60 * 1000; // 2 minutes
+
+// Get comprehensive final analysis with bias for ES, NQ, YM, RTY, GC, CL
+app.get('/api/final-analysis', async (req, res) => {
+  try {
+    const now = Date.now();
+
+    // Get market data (use cache if available, otherwise fetch)
+    let marketData;
+    if (marketDataCache && marketDataCacheTime && (now - marketDataCacheTime) < MARKET_DATA_CACHE_DURATION) {
+      marketData = marketDataCache;
+    } else {
+      // Fetch fresh market data in parallel
+      const [futuresResult, currencyResult, sectorResult, mag7Result] = await Promise.allSettled([
+        fetchYahooFinanceFutures(),
+        fetchCurrencyFutures(),
+        fetchSectorETFs(),
+        fetchMag7Stocks()
+      ]);
+
+      const futures = futuresResult.status === 'fulfilled' ? futuresResult.value : {};
+      const currencies = currencyResult.status === 'fulfilled' ? currencyResult.value : {};
+      const sectors = sectorResult.status === 'fulfilled' ? sectorResult.value : {};
+      const mag7 = mag7Result.status === 'fulfilled' ? mag7Result.value : {};
+
+      marketData = {
+        vix: futures?.VIX?.price || 16,
+        vixChange: futures?.VIX?.changePercent || 0,
+        znChange: futures?.ZN?.changePercent || 0,
+        dxyChange: currencies?.DX?.changePercent || 0,
+        sectors,
+        mag7
+      };
+
+      // Cache market data
+      marketDataCache = marketData;
+      marketDataCacheTime = now;
+    }
+
+    // Generate final analysis
+    const analysis = await generateFinalAnalysis(marketData);
+
+    // Optionally add AI synthesis
+    const { withSynthesis } = req.query;
+    if (withSynthesis === 'true') {
+      analysis.aiSynthesis = await generateAISynthesis(analysis);
+    }
+
+    res.json(analysis);
+  } catch (error) {
+    console.error('Final analysis error:', error);
+    res.status(500).json({
+      error: 'Failed to generate final analysis',
+      message: error.message
+    });
+  }
+});
+
+// Force refresh final analysis
+app.post('/api/final-analysis/refresh', async (req, res) => {
+  try {
+    // Clear all caches
+    clearFinalAnalysisCache();
+    marketDataCache = null;
+    marketDataCacheTime = null;
+
+    // Fetch fresh market data
+    const [futuresResult, currencyResult, sectorResult, mag7Result] = await Promise.allSettled([
+      fetchYahooFinanceFutures(),
+      fetchCurrencyFutures(),
+      fetchSectorETFs(),
+      fetchMag7Stocks()
+    ]);
+
+    const futures = futuresResult.status === 'fulfilled' ? futuresResult.value : {};
+    const currencies = currencyResult.status === 'fulfilled' ? currencyResult.value : {};
+    const sectors = sectorResult.status === 'fulfilled' ? sectorResult.value : {};
+    const mag7 = mag7Result.status === 'fulfilled' ? mag7Result.value : {};
+
+    const marketData = {
+      vix: futures?.VIX?.price || 16,
+      vixChange: futures?.VIX?.changePercent || 0,
+      znChange: futures?.ZN?.changePercent || 0,
+      dxyChange: currencies?.DX?.changePercent || 0,
+      sectors,
+      mag7
+    };
+
+    // Cache market data
+    marketDataCache = marketData;
+    marketDataCacheTime = Date.now();
+
+    // Generate fresh analysis
+    const analysis = await generateFinalAnalysis(marketData, { forceRefresh: true });
+
+    res.json({
+      success: true,
+      message: 'Final analysis refreshed',
+      analysis
+    });
+  } catch (error) {
+    console.error('Final analysis refresh error:', error);
+    res.status(500).json({
+      error: 'Failed to refresh final analysis',
+      message: error.message
+    });
+  }
+});
+
+// Get final analysis cache status
+app.get('/api/final-analysis/status', (req, res) => {
+  res.json({
+    analysis: getFinalAnalysisCacheStatus(),
+    marketData: {
+      isCached: !!marketDataCache,
+      cacheAge: marketDataCacheTime ? Date.now() - marketDataCacheTime : null,
+      maxAge: MARKET_DATA_CACHE_DURATION
+    },
+    lastUpdate: new Date().toISOString()
+  });
+});
+
+// ============================================================================
+// EARNINGS CALENDAR ENDPOINT
+// ============================================================================
+
+// Get today's earnings calendar
+app.get('/api/earnings', async (req, res) => {
+  try {
+    const earnings = await fetchEarningsCalendar();
+
+    res.json({
+      count: earnings.length,
+      earnings,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Earnings calendar error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch earnings calendar',
+      message: error.message
+    });
+  }
 });
 
 // ============================================================================
@@ -927,9 +1114,9 @@ app.delete('/api/scanner', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
-  console.log(`News Analysis: http://localhost:${PORT}/api/news/analyzed`);
+  console.log(`Final Analysis: http://localhost:${PORT}/api/final-analysis`);
+  console.log(`News Analysis (All Sources): http://localhost:${PORT}/api/news/analyzed`);
   console.log(`High Impact News: http://localhost:${PORT}/api/news/high-impact`);
+  console.log(`Earnings Calendar: http://localhost:${PORT}/api/earnings`);
   console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
-  console.log(`ICT Scanner: http://localhost:${PORT}/api/scanner/ict`);
-  console.log(`Order Flow Scanner: http://localhost:${PORT}/api/scanner/orderflow`);
 });
