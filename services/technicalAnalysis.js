@@ -157,9 +157,10 @@ async function fetchHistoricalData(symbol, days = 60) {
  * Calculate ATR (Average True Range)
  * @param {Object[]} candles - Array of {high, low, close} objects
  * @param {number} period - ATR period (default 20)
- * @returns {Object} - ATR data
+ * @param {string} symbol - Optional symbol for tick/USD conversion
+ * @returns {Object} - ATR data with points, ticks, and USD
  */
-function calculateATR(candles, period = 20) {
+function calculateATR(candles, period = 20, symbol = null) {
   if (candles.length < period + 1) return null;
 
   const trueRanges = [];
@@ -192,14 +193,47 @@ function calculateATR(candles, period = 20) {
   const remainingRange = Math.max(0, atr - todayRange);
   const percentUsed = (todayRange / atr) * 100;
 
+  // Convert to ticks and USD if symbol provided
+  let atrTicks = null, atrUSD = null;
+  let todayTicks = null, todayUSD = null;
+  let remainingTicks = null, remainingUSD = null;
+  let tickSize = null, tickValue = null;
+
+  if (symbol) {
+    const atrConversion = convertPointsToTicksAndUSD(symbol, atr);
+    const todayConversion = convertPointsToTicksAndUSD(symbol, todayRange);
+    const remainingConversion = convertPointsToTicksAndUSD(symbol, remainingRange);
+
+    atrTicks = atrConversion.ticks;
+    atrUSD = atrConversion.usd;
+    todayTicks = todayConversion.ticks;
+    todayUSD = todayConversion.usd;
+    remainingTicks = remainingConversion.ticks;
+    remainingUSD = remainingConversion.usd;
+    tickSize = atrConversion.tickSize;
+    tickValue = atrConversion.tickValue;
+  }
+
   return {
+    // Points
     atr: parseFloat(atr.toFixed(2)),
     todayRange: parseFloat(todayRange.toFixed(2)),
+    remainingRange: parseFloat(remainingRange.toFixed(2)),
+    // Ticks
+    atrTicks,
+    todayTicks,
+    remainingTicks,
+    // USD
+    atrUSD,
+    todayUSD,
+    remainingUSD,
+    // Meta
     todayHigh: parseFloat(todayCandle.high.toFixed(2)),
     todayLow: parseFloat(todayCandle.low.toFixed(2)),
-    remainingRange: parseFloat(remainingRange.toFixed(2)),
     percentUsed: parseFloat(percentUsed.toFixed(1)),
-    period
+    period,
+    tickSize,
+    tickValue
   };
 }
 
@@ -313,7 +347,7 @@ async function analyzeTechnicals(symbol) {
 }
 
 /**
- * Generate ATR summary for day traders
+ * Generate ATR summary for day traders (basic version without ticks/USD)
  */
 function generateATRSummary(atrData) {
   const { atr, todayRange, remainingRange, percentUsed } = atrData;
@@ -326,6 +360,35 @@ function generateATRSummary(atrData) {
     return `Half of daily range used. Approximately ${remainingRange.toFixed(1)} points of movement still possible based on 20-day ATR.`;
   } else {
     return `Early in daily range (${percentUsed.toFixed(0)}% used). Expecting ${remainingRange.toFixed(1)} more points of movement. Good opportunity window.`;
+  }
+}
+
+/**
+ * Generate ATR summary with ticks and USD values
+ */
+function generateATRSummaryWithTicks(atrData, symbol) {
+  const { remainingRange, remainingTicks, remainingUSD, percentUsed, tickValue } = atrData;
+
+  // Format USD with commas
+  const formatUSD = (val) => val ? `$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '';
+
+  if (percentUsed >= 90) {
+    return `Daily range nearly exhausted (${percentUsed.toFixed(0)}% used). Limited movement expected - consider waiting for tomorrow.`;
+  } else if (percentUsed >= 70) {
+    if (remainingTicks !== null) {
+      return `Most of range used (${percentUsed.toFixed(0)}%). Remaining: ~${remainingTicks} ticks (${formatUSD(remainingUSD)} potential per contract). Be selective.`;
+    }
+    return `Most of daily range used (${percentUsed.toFixed(0)}%). About ${remainingRange.toFixed(1)} points remaining. Be selective with entries.`;
+  } else if (percentUsed >= 50) {
+    if (remainingTicks !== null) {
+      return `Half of range used. Expecting ~${remainingTicks} more ticks (${remainingRange.toFixed(1)} pts / ${formatUSD(remainingUSD)}) of movement.`;
+    }
+    return `Half of daily range used. Approximately ${remainingRange.toFixed(1)} points of movement still possible.`;
+  } else {
+    if (remainingTicks !== null) {
+      return `Good opportunity window (${percentUsed.toFixed(0)}% used). Expecting ~${remainingTicks} ticks (${remainingRange.toFixed(1)} pts / ${formatUSD(remainingUSD)}) more movement.`;
+    }
+    return `Early in daily range (${percentUsed.toFixed(0)}% used). Expecting ${remainingRange.toFixed(1)} more points of movement.`;
   }
 }
 
@@ -423,6 +486,65 @@ function detectTrending(instrument, technicals, hasFundamentalCatalyst = false) 
     level,
     score,
     reasons
+  };
+}
+
+// Tick size and dollar value per tick for each futures contract
+const TICK_CONFIG = {
+  // Equity Index Futures
+  'ES': { tickSize: 0.25, tickValue: 12.50, name: 'E-mini S&P 500' },
+  'NQ': { tickSize: 0.25, tickValue: 5.00, name: 'E-mini Nasdaq' },
+  'YM': { tickSize: 1.00, tickValue: 5.00, name: 'E-mini Dow' },
+  'RTY': { tickSize: 0.10, tickValue: 5.00, name: 'E-mini Russell' },
+  // Metals
+  'GC': { tickSize: 0.10, tickValue: 10.00, name: 'Gold' },
+  'SI': { tickSize: 0.005, tickValue: 25.00, name: 'Silver' },
+  'HG': { tickSize: 0.0005, tickValue: 12.50, name: 'Copper' },
+  // Energy
+  'CL': { tickSize: 0.01, tickValue: 10.00, name: 'Crude Oil' },
+  'NG': { tickSize: 0.001, tickValue: 10.00, name: 'Natural Gas' },
+  'RB': { tickSize: 0.0001, tickValue: 4.20, name: 'RBOB Gasoline' },
+  // Bonds
+  'ZN': { tickSize: 0.015625, tickValue: 15.625, name: '10-Year Note' },
+  'ZB': { tickSize: 0.03125, tickValue: 31.25, name: '30-Year Bond' },
+  'ZT': { tickSize: 0.0078125, tickValue: 15.625, name: '2-Year Note' },
+  'ZF': { tickSize: 0.0078125, tickValue: 7.8125, name: '5-Year Note' },
+  // Agriculture
+  'ZC': { tickSize: 0.25, tickValue: 12.50, name: 'Corn' },
+  'ZS': { tickSize: 0.25, tickValue: 12.50, name: 'Soybeans' },
+  'ZW': { tickSize: 0.25, tickValue: 12.50, name: 'Wheat' },
+  'ZM': { tickSize: 0.10, tickValue: 10.00, name: 'Soybean Meal' },
+  'ZL': { tickSize: 0.01, tickValue: 6.00, name: 'Soybean Oil' },
+  // Currencies
+  '6E': { tickSize: 0.00005, tickValue: 6.25, name: 'Euro FX' },
+  '6J': { tickSize: 0.0000005, tickValue: 6.25, name: 'Japanese Yen' },
+  '6B': { tickSize: 0.0001, tickValue: 6.25, name: 'British Pound' },
+  '6A': { tickSize: 0.0001, tickValue: 10.00, name: 'Australian Dollar' },
+  // Crypto
+  'BTC': { tickSize: 5.00, tickValue: 25.00, name: 'Bitcoin' },
+  'ETH': { tickSize: 0.25, tickValue: 12.50, name: 'Ethereum' },
+};
+
+/**
+ * Convert points to ticks and USD value
+ * @param {string} symbol - Instrument symbol
+ * @param {number} points - Number of points
+ * @returns {Object} - { ticks, usd, tickSize, tickValue }
+ */
+function convertPointsToTicksAndUSD(symbol, points) {
+  const config = TICK_CONFIG[symbol];
+  if (!config) {
+    return { ticks: null, usd: null, tickSize: null, tickValue: null };
+  }
+
+  const ticks = Math.round(points / config.tickSize);
+  const usd = ticks * config.tickValue;
+
+  return {
+    ticks,
+    usd: parseFloat(usd.toFixed(2)),
+    tickSize: config.tickSize,
+    tickValue: config.tickValue
   };
 }
 
@@ -566,17 +688,17 @@ async function getChartData(symbol, interval = '1d') {
       }
     }
 
-    // Calculate ATR for the chart period
+    // Calculate ATR for the chart period (pass symbol for tick/USD conversion)
     const fullCandles = candles.map((c, i) => ({
       high: c.high,
       low: c.low,
       close: c.close
     }));
-    const atrData = calculateATR(fullCandles, 20);
+    const atrData = calculateATR(fullCandles, 20, symbol);
 
     // Add ATR summary for day traders
     if (atrData) {
-      atrData.summary = generateATRSummary(atrData);
+      atrData.summary = generateATRSummaryWithTicks(atrData, symbol);
     }
 
     return {
