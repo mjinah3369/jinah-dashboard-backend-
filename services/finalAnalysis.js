@@ -6,7 +6,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { analyzeAllSourcesNews, getNewsSentimentSummary } from './newsAnalysis.js';
-import { fetchEarningsCalendar } from './alphaVantage.js';
+import { fetchEarningsCalendar, fetchEconomicCalendar } from './alphaVantage.js';
+import { fetchEnergyReports, fetchCentralBankCalendar, buildReportsCalendar } from './fundamentalReports.js';
 
 // Initialize Anthropic client
 let anthropic = null;
@@ -589,7 +590,7 @@ function generateMarketContext(marketData, newsSentiment, earnings) {
 /**
  * Generate key risks
  */
-function generateKeyRisks(marketData, newsSentiment, earnings, economicCalendar) {
+function generateKeyRisks(marketData, newsSentiment, earnings, economicReleases = []) {
   const risks = [];
 
   // VIX risk
@@ -600,10 +601,21 @@ function generateKeyRisks(marketData, newsSentiment, earnings, economicCalendar)
   // Earnings risk
   if (earnings && earnings.length > 0) {
     const mag7Earnings = earnings.filter(e =>
-      ['AAPL', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA'].includes(e.company)
+      ['AAPL', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA'].includes(e.company || e.symbol)
     );
     if (mag7Earnings.length > 0) {
-      risks.push(`Mag7 earnings: ${mag7Earnings.map(e => e.company).join(', ')}`);
+      risks.push(`Mag7 earnings: ${mag7Earnings.map(e => e.company || e.symbol).join(', ')}`);
+    }
+  }
+
+  // Economic release risk
+  if (economicReleases && economicReleases.length > 0) {
+    const highImpact = economicReleases.filter(r => {
+      const name = (r.event || r.name || '').toLowerCase();
+      return ['cpi', 'ppi', 'employment', 'jobs', 'gdp', 'fomc', 'fed'].some(kw => name.includes(kw));
+    });
+    if (highImpact.length > 0) {
+      risks.push(`Data: ${highImpact.slice(0, 2).map(r => r.event || r.name).join(', ')}`);
     }
   }
 
@@ -624,7 +636,7 @@ function generateKeyRisks(marketData, newsSentiment, earnings, economicCalendar)
     risks.push('Monitor intraday data releases');
   }
 
-  return risks.slice(0, 4);
+  return risks.slice(0, 5);
 }
 
 /**
@@ -646,6 +658,14 @@ export async function generateFinalAnalysis(marketData, options = {}) {
   // Fetch news sentiment (last 1 hour)
   const newsSentiment = await getNewsSentimentSummary({ lastHours: 1 });
 
+  // Fetch all news items (last 2 hours for popup detail)
+  let allNews = [];
+  try {
+    allNews = await analyzeAllSourcesNews({ lastHours: 2 });
+  } catch (err) {
+    console.warn('Could not fetch all news:', err.message);
+  }
+
   // Fetch earnings calendar
   let earnings = [];
   try {
@@ -653,6 +673,35 @@ export async function generateFinalAnalysis(marketData, options = {}) {
   } catch (err) {
     console.warn('Could not fetch earnings:', err.message);
   }
+
+  // Fetch economic calendar
+  let economicReleases = [];
+  try {
+    economicReleases = await fetchEconomicCalendar();
+  } catch (err) {
+    console.warn('Could not fetch economic calendar:', err.message);
+  }
+
+  // Fetch energy reports (for CL)
+  let energyReports = [];
+  try {
+    energyReports = fetchEnergyReports();
+  } catch (err) {
+    console.warn('Could not fetch energy reports:', err.message);
+  }
+
+  // Fetch central bank calendar
+  let centralBankEvents = [];
+  try {
+    centralBankEvents = fetchCentralBankCalendar();
+  } catch (err) {
+    console.warn('Could not fetch central bank calendar:', err.message);
+  }
+
+  // Get today's and upcoming reports
+  const todayReports = energyReports.filter(r => r.isToday);
+  const upcomingReports = energyReports.filter(r => r.isTomorrow).slice(0, 3);
+  const nextFOMC = centralBankEvents.find(e => e.shortName === 'FOMC');
 
   // Calculate bias for each instrument
   const esResult = calculateESBias(marketData, newsSentiment);
@@ -662,21 +711,31 @@ export async function generateFinalAnalysis(marketData, options = {}) {
   const gcResult = calculateGCBias(marketData, newsSentiment);
   const clResult = calculateCLBias(marketData, newsSentiment);
 
+  // Build detailed popup data for each instrument
+  const instrumentDetails = buildInstrumentDetails(
+    { ES: esResult, NQ: nqResult, YM: ymResult, RTY: rtyResult, GC: gcResult, CL: clResult },
+    marketData,
+    allNews,
+    earnings,
+    economicReleases,
+    { energyReports: todayReports, upcomingReports, nextFOMC }
+  );
+
   // Build final response
   const result = {
     timestamp: new Date().toISOString(),
     newsAnalyzed: newsSentiment.total,
     timeframe: 'Last 1 hour',
     instruments: {
-      ES: esResult,
-      NQ: nqResult,
-      YM: ymResult,
-      RTY: rtyResult,
-      GC: gcResult,
-      CL: clResult
+      ES: { ...esResult, details: instrumentDetails.ES },
+      NQ: { ...nqResult, details: instrumentDetails.NQ },
+      YM: { ...ymResult, details: instrumentDetails.YM },
+      RTY: { ...rtyResult, details: instrumentDetails.RTY },
+      GC: { ...gcResult, details: instrumentDetails.GC },
+      CL: { ...clResult, details: instrumentDetails.CL }
     },
     marketContext: generateMarketContext(marketData, newsSentiment, earnings),
-    keyRisks: generateKeyRisks(marketData, newsSentiment, earnings),
+    keyRisks: generateKeyRisks(marketData, newsSentiment, earnings, economicReleases),
     newsSummary: {
       total: newsSentiment.total,
       highImpact: newsSentiment.byImpact.HIGH,
@@ -685,12 +744,22 @@ export async function generateFinalAnalysis(marketData, options = {}) {
       topNews: newsSentiment.topNews
     },
     earningsToday: earnings.slice(0, 5),
+    economicReleases: economicReleases.slice(0, 5),
+    energyReportsToday: todayReports,
+    upcomingReports: upcomingReports,
+    nextFOMC: nextFOMC ? {
+      date: nextFOMC.date,
+      dateLabel: nextFOMC.dateLabel,
+      pressConference: nextFOMC.pressConference
+    } : null,
     marketData: {
       vix: marketData.vix,
       vixChange: marketData.vixChange,
       znChange: marketData.znChange,
       dxyChange: marketData.dxyChange,
-      mag7Green: Object.values(marketData.mag7 || {}).filter(s => (s.changePercent || 0) > 0).length
+      mag7Green: Object.values(marketData.mag7 || {}).filter(s => (s.changePercent || 0) > 0).length,
+      mag7Details: buildMag7Details(marketData.mag7),
+      sectorLeaders: buildSectorLeaders(marketData.sectors)
     }
   };
 
@@ -700,6 +769,330 @@ export async function generateFinalAnalysis(marketData, options = {}) {
 
   console.log('Final analysis generated');
   return result;
+}
+
+/**
+ * Build detailed popup data for each instrument
+ */
+function buildInstrumentDetails(results, marketData, allNews, earnings, economicReleases, reports) {
+  const details = {};
+
+  // News keywords for each instrument
+  const NEWS_KEYWORDS = {
+    ES: ['S&P', 'SPX', 'SPY', 'ES', 'stock market', 'equities', 'Fed', 'economy', 'inflation', 'employment', 'GDP', 'retail'],
+    NQ: ['Nasdaq', 'tech', 'technology', 'AAPL', 'NVDA', 'MSFT', 'GOOGL', 'META', 'AMZN', 'TSLA', 'AI', 'semiconductor', 'software', 'QQQ'],
+    YM: ['Dow', 'DJIA', 'industrial', 'manufacturing', 'blue chip', 'JPM', 'GS', 'BA', 'CAT', 'HD'],
+    RTY: ['Russell', 'small cap', 'regional bank', 'IWM', 'small business', 'domestic'],
+    GC: ['gold', 'precious metal', 'safe haven', 'inflation hedge', 'central bank buying', 'jewelry', 'GLD'],
+    CL: ['oil', 'crude', 'WTI', 'Brent', 'OPEC', 'energy', 'gasoline', 'refinery', 'drilling', 'EIA', 'petroleum', 'inventory']
+  };
+
+  // Build details for each instrument
+  for (const [symbol, result] of Object.entries(results)) {
+    const keywords = NEWS_KEYWORDS[symbol] || [];
+
+    // Filter relevant news for this instrument
+    const relevantNews = allNews.filter(news => {
+      const text = (news.headline || news.title || '').toLowerCase();
+      const symbolMatch = news.symbols?.includes(symbol);
+      const keywordMatch = keywords.some(kw => text.includes(kw.toLowerCase()));
+      return symbolMatch || keywordMatch;
+    }).slice(0, 10);
+
+    // Filter relevant earnings (for equity indices)
+    const relevantEarnings = ['ES', 'NQ', 'YM', 'RTY'].includes(symbol) ? earnings.slice(0, 5) : [];
+
+    // Filter relevant economic releases
+    const relevantReleases = economicReleases.filter(release => {
+      const name = (release.event || release.name || '').toLowerCase();
+      if (symbol === 'ES' || symbol === 'NQ' || symbol === 'YM') {
+        return ['gdp', 'employment', 'jobs', 'cpi', 'ppi', 'retail', 'fed', 'fomc', 'pce'].some(kw => name.includes(kw));
+      }
+      if (symbol === 'RTY') {
+        return ['employment', 'small business', 'regional', 'fed'].some(kw => name.includes(kw));
+      }
+      if (symbol === 'GC') {
+        return ['cpi', 'inflation', 'fed', 'fomc', 'gold', 'central bank'].some(kw => name.includes(kw));
+      }
+      if (symbol === 'CL') {
+        return ['oil', 'energy', 'eia', 'opec', 'inventory', 'petroleum'].some(kw => name.includes(kw));
+      }
+      return false;
+    }).slice(0, 5);
+
+    // Build factor explanations with more detail
+    const factorExplanations = buildFactorExplanations(result.factors, symbol, marketData);
+
+    // Get OPEC reports for CL
+    const opecReports = symbol === 'CL' ? reports.energyReports : [];
+
+    details[symbol] = {
+      factorExplanations,
+      relevantNews: relevantNews.map(n => ({
+        headline: n.headline || n.title,
+        source: n.source,
+        bias: n.bias,
+        impact: n.impact,
+        timestamp: n.timestamp,
+        summary: n.summary
+      })),
+      relevantEarnings: relevantEarnings.map(e => ({
+        company: e.company || e.symbol,
+        estimate: e.estimate,
+        time: e.time || 'TBD'
+      })),
+      relevantReleases: relevantReleases.map(r => ({
+        event: r.event || r.name,
+        time: r.time,
+        previous: r.previous,
+        forecast: r.forecast
+      })),
+      opecReports: opecReports.map(r => ({
+        name: r.name,
+        shortName: r.shortName,
+        time: r.time,
+        description: r.description,
+        scenarios: r.scenarios
+      })),
+      upcomingCatalysts: buildUpcomingCatalysts(symbol, reports, economicReleases)
+    };
+  }
+
+  return details;
+}
+
+/**
+ * Build detailed factor explanations
+ */
+function buildFactorExplanations(factors, symbol, marketData) {
+  const explanations = {};
+
+  for (const [key, factor] of Object.entries(factors)) {
+    let explanation = '';
+    let interpretation = '';
+
+    switch (key) {
+      case 'VIX':
+        explanation = `VIX at ${marketData.vix?.toFixed(2) || 'N/A'} (${marketData.vixChange > 0 ? '+' : ''}${marketData.vixChange?.toFixed(2) || 0}%)`;
+        if (marketData.vix < 15) {
+          interpretation = 'Low volatility indicates market complacency. Favorable for risk assets.';
+        } else if (marketData.vix < 20) {
+          interpretation = 'Normal volatility. Market conditions are stable.';
+        } else if (marketData.vix < 25) {
+          interpretation = 'Elevated volatility suggests caution. Expect larger price swings.';
+        } else {
+          interpretation = 'High fear levels. Risk-off environment favors safe havens.';
+        }
+        break;
+
+      case 'ZN':
+        explanation = `10-Year Note change: ${marketData.znChange > 0 ? '+' : ''}${marketData.znChange?.toFixed(3) || 0}%`;
+        if (marketData.znChange > 0.15) {
+          interpretation = 'Bond prices rising (yields falling). Supportive for equities and growth stocks.';
+        } else if (marketData.znChange < -0.15) {
+          interpretation = 'Bond prices falling (yields rising). Pressure on rate-sensitive sectors.';
+        } else {
+          interpretation = 'Yields relatively stable. Neutral impact on equities.';
+        }
+        break;
+
+      case 'DXY':
+        explanation = `Dollar Index change: ${marketData.dxyChange > 0 ? '+' : ''}${marketData.dxyChange?.toFixed(2) || 0}%`;
+        if (symbol === 'GC' || symbol === 'CL') {
+          if (marketData.dxyChange > 0.2) {
+            interpretation = 'Strong dollar is bearish for commodities priced in USD.';
+          } else if (marketData.dxyChange < -0.2) {
+            interpretation = 'Weak dollar supports commodity prices.';
+          } else {
+            interpretation = 'Dollar stable, neutral impact on commodities.';
+          }
+        } else {
+          if (marketData.dxyChange > 0.3) {
+            interpretation = 'Strong dollar may pressure multinational earnings.';
+          } else if (marketData.dxyChange < -0.3) {
+            interpretation = 'Weak dollar supportive for exporters and multinationals.';
+          } else {
+            interpretation = 'Dollar stability is neutral for equities.';
+          }
+        }
+        break;
+
+      case 'Mag7':
+        const mag7Green = Object.values(marketData.mag7 || {}).filter(s => (s.changePercent || 0) > 0).length;
+        explanation = `Magnificent 7: ${mag7Green}/7 stocks positive`;
+        if (mag7Green >= 5) {
+          interpretation = 'Tech leadership strong. Bullish for growth and NQ.';
+        } else if (mag7Green <= 2) {
+          interpretation = 'Tech weakness may drag on broader indices.';
+        } else {
+          interpretation = 'Mixed Mag7 performance indicates rotation or indecision.';
+        }
+        break;
+
+      case 'News':
+      case 'TechNews':
+      case 'EnergyNews':
+      case 'GeoNews':
+        explanation = `${factor.total || 0} relevant articles analyzed`;
+        if (factor.score > 0) {
+          interpretation = `News sentiment positive with ${factor.bullish || 0} bullish headlines.`;
+        } else if (factor.score < 0) {
+          interpretation = `News sentiment negative with ${factor.bearish || 0} bearish headlines.`;
+        } else {
+          interpretation = 'News sentiment is balanced/neutral.';
+        }
+        break;
+
+      case 'Tech':
+        explanation = `Technology sector (XLK): ${factor.value > 0 ? '+' : ''}${factor.value?.toFixed(2) || 0}%`;
+        if (factor.value > 0.5) {
+          interpretation = 'Tech sector rallying. Bullish for NQ.';
+        } else if (factor.value < -0.5) {
+          interpretation = 'Tech sector selling off. Bearish for NQ.';
+        } else {
+          interpretation = 'Tech sector range-bound.';
+        }
+        break;
+
+      case 'Energy':
+        explanation = `Energy sector (XLE): ${factor.value > 0 ? '+' : ''}${factor.value?.toFixed(2) || 0}%`;
+        if (factor.value > 0.5) {
+          interpretation = 'Energy stocks strong. Supportive for oil prices.';
+        } else if (factor.value < -0.5) {
+          interpretation = 'Energy stocks weak. May indicate demand concerns.';
+        } else {
+          interpretation = 'Energy sector stable.';
+        }
+        break;
+
+      case 'ES':
+        explanation = `Correlated with ES bias: ${factor.reason}`;
+        interpretation = `Dow typically follows S&P direction with some divergence on industrial/financial news.`;
+        break;
+
+      case 'Industrial':
+        explanation = factor.reason || 'Industrial sector performance';
+        interpretation = 'Industrial activity signals economic health.';
+        break;
+
+      case 'RegionalBank':
+        explanation = factor.reason || 'Regional bank and small cap sentiment';
+        interpretation = 'Small caps are sensitive to regional economic conditions and rate changes.';
+        break;
+
+      default:
+        explanation = factor.reason || `${key} analysis`;
+        interpretation = '';
+    }
+
+    explanations[key] = {
+      ...factor,
+      explanation,
+      interpretation,
+      weight: INSTRUMENT_CONFIG[symbol]?.factors?.[key] || 0.2
+    };
+  }
+
+  return explanations;
+}
+
+/**
+ * Build upcoming catalysts for an instrument
+ */
+function buildUpcomingCatalysts(symbol, reports, economicReleases) {
+  const catalysts = [];
+
+  // Add FOMC if upcoming
+  if (reports.nextFOMC) {
+    catalysts.push({
+      type: 'central_bank',
+      name: 'FOMC Meeting',
+      date: reports.nextFOMC.dateLabel,
+      impact: 'HIGH',
+      description: 'Federal Reserve interest rate decision'
+    });
+  }
+
+  // Add OPEC for CL
+  if (symbol === 'CL' && reports.upcomingReports?.length > 0) {
+    for (const report of reports.upcomingReports) {
+      if (report.shortName?.includes('OPEC') || report.shortName?.includes('EIA')) {
+        catalysts.push({
+          type: 'report',
+          name: report.shortName,
+          date: report.dateLabel,
+          impact: report.importance,
+          description: report.description
+        });
+      }
+    }
+  }
+
+  // Add relevant economic releases
+  const relevantReleases = economicReleases.filter(r => {
+    const name = (r.event || r.name || '').toLowerCase();
+    if (['ES', 'NQ', 'YM', 'RTY'].includes(symbol)) {
+      return ['cpi', 'ppi', 'employment', 'gdp', 'retail'].some(kw => name.includes(kw));
+    }
+    if (symbol === 'GC') {
+      return ['cpi', 'inflation'].some(kw => name.includes(kw));
+    }
+    if (symbol === 'CL') {
+      return ['eia', 'oil', 'inventory'].some(kw => name.includes(kw));
+    }
+    return false;
+  }).slice(0, 3);
+
+  for (const release of relevantReleases) {
+    catalysts.push({
+      type: 'economic',
+      name: release.event || release.name,
+      date: release.date || 'Upcoming',
+      impact: 'MEDIUM',
+      description: `Previous: ${release.previous || 'N/A'}, Forecast: ${release.forecast || 'N/A'}`
+    });
+  }
+
+  return catalysts.slice(0, 5);
+}
+
+/**
+ * Build Mag7 stock details
+ */
+function buildMag7Details(mag7Data) {
+  if (!mag7Data || Object.keys(mag7Data).length === 0) {
+    return [];
+  }
+
+  return Object.entries(mag7Data).map(([symbol, data]) => ({
+    symbol,
+    price: data.price,
+    change: data.change,
+    changePercent: data.changePercent,
+    isPositive: (data.changePercent || 0) > 0
+  })).sort((a, b) => (b.changePercent || 0) - (a.changePercent || 0));
+}
+
+/**
+ * Build sector leaders/laggards
+ */
+function buildSectorLeaders(sectorData) {
+  if (!sectorData || Object.keys(sectorData).length === 0) {
+    return { leaders: [], laggards: [] };
+  }
+
+  const sectors = Object.entries(sectorData)
+    .map(([symbol, data]) => ({
+      symbol,
+      name: data.name,
+      changePercent: data.changePercent || 0
+    }))
+    .sort((a, b) => b.changePercent - a.changePercent);
+
+  return {
+    leaders: sectors.slice(0, 3),
+    laggards: sectors.slice(-3).reverse()
+  };
 }
 
 /**
