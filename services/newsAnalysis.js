@@ -141,13 +141,15 @@ async function analyzeHeadlinesBatch(headlines) {
   try {
     const prompt = buildAnalysisPrompt(headlines);
 
+    console.log('Calling Claude API for', headlines.length, 'headlines...');
     const response = await client.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
       messages: [
         { role: 'user', content: prompt }
       ]
     });
+    console.log('Claude API response received');
 
     const content = response.content[0]?.text || '[]';
 
@@ -193,6 +195,7 @@ async function analyzeHeadlinesBatch(headlines) {
     });
   } catch (error) {
     console.error('Claude analysis error:', error.message);
+    console.error('Full error:', error);
 
     // Return with heuristic analysis on error
     return headlines.map(h => ({
