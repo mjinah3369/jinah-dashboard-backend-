@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks, fetchTreasuryYields, fetchCryptoPrices, calculateExpectationMeters } from './services/yahooFinance.js';
@@ -40,6 +41,17 @@ import {
   getScannerSummary,
   clearScannerData
 } from './services/scannerWebhook.js';
+import {
+  fetchGoogleSheetsNews,
+  clearGoogleSheetsCache,
+  getGoogleSheetsCacheStatus
+} from './services/googleSheets.js';
+import {
+  fetchAnalyzedNews,
+  fetchHighImpactNews,
+  refreshNewsAnalysis,
+  getAnalysisCacheStatus
+} from './services/newsAnalysis.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -679,6 +691,99 @@ app.get('/api/instruments/summaries', async (req, res) => {
 });
 
 // ============================================================================
+// NEWS ANALYSIS ENDPOINTS (Google Sheets + Claude AI)
+// ============================================================================
+
+// Get raw (unanalyzed) news headlines from Google Sheets
+app.get('/api/news/raw', async (req, res) => {
+  try {
+    const news = await fetchGoogleSheetsNews();
+    res.json({
+      count: news.length,
+      news,
+      cache: getGoogleSheetsCacheStatus(),
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Raw news fetch error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch raw news',
+      message: error.message
+    });
+  }
+});
+
+// Get AI-analyzed news (with optional symbol filter)
+app.get('/api/news/analyzed', async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    const news = await fetchAnalyzedNews({ symbol: symbol?.toUpperCase() });
+
+    res.json({
+      count: news.length,
+      news,
+      cache: getAnalysisCacheStatus(),
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Analyzed news fetch error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch analyzed news',
+      message: error.message
+    });
+  }
+});
+
+// Get only high impact news
+app.get('/api/news/high-impact', async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+    const news = await fetchHighImpactNews(parseInt(limit));
+
+    res.json({
+      count: news.length,
+      news,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('High impact news fetch error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch high impact news',
+      message: error.message
+    });
+  }
+});
+
+// Force refresh - clear caches and re-analyze all news
+app.post('/api/news/refresh', async (req, res) => {
+  try {
+    const news = await refreshNewsAnalysis();
+
+    res.json({
+      success: true,
+      count: news.length,
+      message: 'News cache cleared and re-analyzed',
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('News refresh error:', error);
+    res.status(500).json({
+      error: 'Failed to refresh news',
+      message: error.message
+    });
+  }
+});
+
+// Get news analysis cache status
+app.get('/api/news/status', (req, res) => {
+  res.json({
+    sheets: getGoogleSheetsCacheStatus(),
+    analysis: getAnalysisCacheStatus(),
+    lastUpdate: new Date().toISOString()
+  });
+});
+
+// ============================================================================
 // REAL-TIME SCANNER ENDPOINTS (TradingView Webhooks)
 // ============================================================================
 
@@ -822,6 +927,8 @@ app.delete('/api/scanner', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
+  console.log(`News Analysis: http://localhost:${PORT}/api/news/analyzed`);
+  console.log(`High Impact News: http://localhost:${PORT}/api/news/high-impact`);
   console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
   console.log(`ICT Scanner: http://localhost:${PORT}/api/scanner/ict`);
   console.log(`Order Flow Scanner: http://localhost:${PORT}/api/scanner/orderflow`);
