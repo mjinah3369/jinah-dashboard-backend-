@@ -751,11 +751,25 @@ export async function generateFinalAnalysis(marketData, options = {}) {
     marketData
   );
 
+  // Generate "What to Look For Today" brief
+  let dailyBrief = null;
+  try {
+    dailyBrief = await generateDailyBrief(
+      marketData,
+      newsSentiment,
+      { ES: esResult, NQ: nqResult, YM: ymResult, RTY: rtyResult, GC: gcResult, CL: clResult }
+    );
+    console.log('Daily brief generated');
+  } catch (err) {
+    console.warn('Could not generate daily brief:', err.message);
+  }
+
   // Build final response
   const result = {
     timestamp: new Date().toISOString(),
     newsAnalyzed: newsSentiment.total,
     timeframe: 'Last 1 hour',
+    dailyBrief,  // "What to Look For Today" section
     instruments: {
       ES: { ...esResult, details: instrumentDetails.ES },
       NQ: { ...nqResult, details: instrumentDetails.NQ },
@@ -1364,6 +1378,148 @@ function buildSectorLeaders(sectorData) {
   return {
     leaders: sectors.slice(0, 3),
     laggards: sectors.slice(-3).reverse()
+  };
+}
+
+/**
+ * Generate "What to Look For Today" brief for day traders
+ * Updates every 5 minutes with AI-powered analysis
+ */
+export async function generateDailyBrief(marketData, newsSentiment, instruments) {
+  const client = getAnthropicClient();
+
+  // Build context for AI
+  const vixContext = marketData.vix < 15 ? 'low' : marketData.vix < 20 ? 'normal' : marketData.vix < 25 ? 'elevated' : 'high';
+  const yieldContext = marketData.znChange > 0.1 ? 'falling' : marketData.znChange < -0.1 ? 'rising' : 'stable';
+  const dollarContext = marketData.dxyChange > 0.2 ? 'strengthening' : marketData.dxyChange < -0.2 ? 'weakening' : 'stable';
+
+  // Find strongest/weakest instruments
+  const sortedInstruments = Object.entries(instruments)
+    .map(([symbol, data]) => ({ symbol, ...data }))
+    .sort((a, b) => b.score - a.score);
+
+  const bullishInstruments = sortedInstruments.filter(i => i.bias.includes('BULLISH'));
+  const bearishInstruments = sortedInstruments.filter(i => i.bias.includes('BEARISH'));
+
+  // Get Mag7 status
+  const mag7Green = Object.values(marketData.mag7 || {}).filter(s => (s.changePercent || 0) > 0).length;
+
+  // Get sector leaders
+  const sectors = Object.entries(marketData.sectors || {})
+    .map(([symbol, data]) => ({ symbol, ...data }))
+    .sort((a, b) => (b.changePercent || 0) - (a.changePercent || 0));
+  const leadingSector = sectors[0];
+  const laggingSector = sectors[sectors.length - 1];
+
+  // Build brief without AI if no API key
+  if (!client) {
+    return buildFallbackBrief(marketData, newsSentiment, instruments, {
+      vixContext, yieldContext, dollarContext, bullishInstruments, bearishInstruments, mag7Green, leadingSector, laggingSector
+    });
+  }
+
+  try {
+    const prompt = `You are a senior day trader writing a brief morning note for your trading desk. Based on the current market conditions, write a 3-4 sentence actionable brief on what to watch today. Be direct and specific.
+
+CURRENT CONDITIONS:
+- VIX: ${marketData.vix?.toFixed(1)} (${vixContext} volatility)
+- 10Y Yields: ${yieldContext}
+- Dollar (DXY): ${dollarContext}
+- Mag7: ${mag7Green}/7 stocks green
+- Leading Sector: ${leadingSector?.name || 'N/A'} (${leadingSector?.changePercent > 0 ? '+' : ''}${leadingSector?.changePercent?.toFixed(2) || 0}%)
+- Lagging Sector: ${laggingSector?.name || 'N/A'} (${laggingSector?.changePercent > 0 ? '+' : ''}${laggingSector?.changePercent?.toFixed(2) || 0}%)
+
+INSTRUMENT BIASES:
+${sortedInstruments.map(i => `- ${i.symbol}: ${i.bias} (${i.confidence}%)`).join('\n')}
+
+NEWS SENTIMENT:
+- Total: ${newsSentiment?.total || 0} stories
+- Bullish: ${newsSentiment?.byBias?.bullish || 0}
+- Bearish: ${newsSentiment?.byBias?.bearish || 0}
+- High Impact: ${newsSentiment?.byImpact?.HIGH || 0}
+
+Write the brief focusing on:
+1. Which instruments have the clearest setups today
+2. Key levels or conditions to watch
+3. Risk factors to be aware of
+
+Keep it conversational but professional. No bullet points, just flowing text. Start with the most important thing to watch.`;
+
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 300,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const aiText = response.content[0]?.text || '';
+
+    return {
+      brief: aiText,
+      generated: true,
+      timestamp: new Date().toISOString(),
+      highlights: {
+        topPick: bullishInstruments[0]?.symbol || bearishInstruments[0]?.symbol || 'ES',
+        direction: bullishInstruments.length > bearishInstruments.length ? 'bullish' : bearishInstruments.length > bullishInstruments.length ? 'bearish' : 'mixed',
+        vixLevel: vixContext,
+        mag7Status: mag7Green >= 5 ? 'strong' : mag7Green <= 2 ? 'weak' : 'mixed'
+      }
+    };
+  } catch (error) {
+    console.error('Daily brief AI error:', error.message);
+    return buildFallbackBrief(marketData, newsSentiment, instruments, {
+      vixContext, yieldContext, dollarContext, bullishInstruments, bearishInstruments, mag7Green, leadingSector, laggingSector
+    });
+  }
+}
+
+/**
+ * Build fallback brief without AI
+ */
+function buildFallbackBrief(marketData, newsSentiment, instruments, context) {
+  const { vixContext, yieldContext, dollarContext, bullishInstruments, bearishInstruments, mag7Green, leadingSector } = context;
+
+  let brief = '';
+
+  // Opening - most important setup
+  if (bullishInstruments.length > bearishInstruments.length) {
+    brief += `Bullish bias today with ${bullishInstruments.map(i => i.symbol).join(', ')} showing strength. `;
+  } else if (bearishInstruments.length > bullishInstruments.length) {
+    brief += `Caution warranted - ${bearishInstruments.map(i => i.symbol).join(', ')} showing weakness. `;
+  } else {
+    brief += `Mixed signals across instruments - wait for clearer direction. `;
+  }
+
+  // VIX context
+  if (vixContext === 'low') {
+    brief += `VIX at ${marketData.vix?.toFixed(1)} suggests complacency - good for trend trades but watch for reversals. `;
+  } else if (vixContext === 'elevated' || vixContext === 'high') {
+    brief += `Elevated VIX (${marketData.vix?.toFixed(1)}) - expect wider ranges and use smaller size. `;
+  }
+
+  // Sector/Tech leadership
+  if (mag7Green >= 5) {
+    brief += `Tech leading with ${mag7Green}/7 Mag7 green - NQ likely outperforms. `;
+  } else if (mag7Green <= 2) {
+    brief += `Tech lagging with only ${mag7Green}/7 Mag7 green - rotation possible. `;
+  }
+
+  // Yields/Dollar
+  if (yieldContext === 'falling') {
+    brief += `Falling yields supportive for equities. `;
+  } else if (yieldContext === 'rising') {
+    brief += `Rising yields may cap upside. `;
+  }
+
+  return {
+    brief: brief.trim(),
+    generated: false,
+    timestamp: new Date().toISOString(),
+    highlights: {
+      topPick: bullishInstruments[0]?.symbol || bearishInstruments[0]?.symbol || 'ES',
+      direction: bullishInstruments.length > bearishInstruments.length ? 'bullish' : bearishInstruments.length > bullishInstruments.length ? 'bearish' : 'mixed',
+      vixLevel: vixContext,
+      mag7Status: mag7Green >= 5 ? 'strong' : mag7Green <= 2 ? 'weak' : 'mixed'
+    }
   };
 }
 
