@@ -574,6 +574,11 @@ async function getChartData(symbol, interval = '1d') {
     }));
     const atrData = calculateATR(fullCandles, 20);
 
+    // Add ATR summary for day traders
+    if (atrData) {
+      atrData.summary = generateATRSummary(atrData);
+    }
+
     return {
       symbol,
       interval: config.interval,
