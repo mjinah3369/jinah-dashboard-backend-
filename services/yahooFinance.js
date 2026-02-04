@@ -93,6 +93,29 @@ const SECTOR_SYMBOLS = {
   'XLU': { name: 'Utilities', symbol: 'XLU' }
 };
 
+// === SESSION-SPECIFIC SYMBOLS (Phase 2) ===
+
+// Asia Session Additions
+const ASIA_SESSION_SYMBOLS = {
+  '^HSI': { name: 'Hang Seng Index', symbol: 'HSI', session: 'asia' },
+  '000001.SS': { name: 'Shanghai Composite', symbol: 'SHANGHAI', session: 'asia' },
+  'AUDUSD=X': { name: 'Australian Dollar', symbol: 'AUDUSD', session: 'asia' },
+  'USDJPY=X': { name: 'USD/JPY', symbol: 'USDJPY', session: 'asia' }
+};
+
+// London Session Additions
+const LONDON_SESSION_SYMBOLS = {
+  'CHF=X': { name: 'Swiss Franc', symbol: 'CHF', session: 'london' },
+  'GBPUSD=X': { name: 'British Pound', symbol: 'GBPUSD', session: 'london' },
+  'EURUSD=X': { name: 'Euro/USD', symbol: 'EURUSD', session: 'london' }
+};
+
+// US Session Additions (Risk-On/Off indicators)
+const US_SESSION_SYMBOLS = {
+  'HYG': { name: 'High Yield Bond ETF', symbol: 'HYG', session: 'us', interpretation: 'risk-on/off' },
+  'TLT': { name: '20-Year Treasury ETF', symbol: 'TLT', session: 'us', interpretation: 'flight-to-safety' }
+};
+
 // Magnificent Seven Stocks
 const MAG7_SYMBOLS = {
   'AAPL': { name: 'Apple', symbol: 'AAPL', description: 'iPhones, Mac, Services' },
@@ -1177,5 +1200,263 @@ function analyzeNewsSentiment(newsData) {
     GC: Math.max(-2, Math.min(2, gcSentiment)),
     CL: Math.max(-2, Math.min(2, clSentiment)),
     geopolitical: Math.max(-2, Math.min(2, geoScore))
+  };
+}
+
+// ============================================================================
+// SESSION-SPECIFIC INSTRUMENTS (Phase 2)
+// ============================================================================
+
+/**
+ * Fetch Asia session instruments
+ * HSI, Shanghai, AUDUSD, USDJPY + existing HG (Copper)
+ */
+export async function fetchAsiaInstruments() {
+  const symbols = Object.keys(ASIA_SESSION_SYMBOLS);
+  const results = {};
+
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = ASIA_SESSION_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
+
+      if (!meta || !meta.regularMarketPrice) return null;
+
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+
+      return {
+        symbol: config.symbol,
+        data: {
+          name: config.name,
+          price: parseFloat(price.toFixed(config.symbol.includes('USD') ? 4 : 2)),
+          change: parseFloat(change.toFixed(config.symbol.includes('USD') ? 4 : 2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          high: meta.regularMarketDayHigh || price,
+          low: meta.regularMarketDayLow || price,
+          volume: meta.regularMarketVolume || 0,
+          session: 'asia'
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch Asia instrument ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
+
+  const fetchResults = await Promise.allSettled(fetchPromises);
+  fetchResults.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      results[res.value.symbol] = res.value.data;
+    }
+  });
+
+  // Add fallback for missing
+  const fallback = {
+    HSI: { name: 'Hang Seng Index', price: 17800, changePercent: -0.5, session: 'asia' },
+    SHANGHAI: { name: 'Shanghai Composite', price: 3050, changePercent: 0.2, session: 'asia' },
+    AUDUSD: { name: 'Australian Dollar', price: 0.6550, changePercent: -0.3, session: 'asia' },
+    USDJPY: { name: 'USD/JPY', price: 149.50, changePercent: 0.1, session: 'asia' }
+  };
+
+  Object.keys(fallback).forEach(symbol => {
+    if (!results[symbol]) {
+      results[symbol] = { ...fallback[symbol], isFallback: true };
+    }
+  });
+
+  console.log(`Asia Instruments: fetched ${Object.keys(results).length} instruments`);
+  return results;
+}
+
+/**
+ * Fetch London session instruments
+ * CHF, GBPUSD, EURUSD + existing SI (Silver), 6E, 6B
+ */
+export async function fetchLondonInstruments() {
+  const symbols = Object.keys(LONDON_SESSION_SYMBOLS);
+  const results = {};
+
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = LONDON_SESSION_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
+
+      if (!meta || !meta.regularMarketPrice) return null;
+
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+
+      return {
+        symbol: config.symbol,
+        data: {
+          name: config.name,
+          price: parseFloat(price.toFixed(4)),
+          change: parseFloat(change.toFixed(4)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          high: meta.regularMarketDayHigh || price,
+          low: meta.regularMarketDayLow || price,
+          session: 'london'
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch London instrument ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
+
+  const fetchResults = await Promise.allSettled(fetchPromises);
+  fetchResults.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      results[res.value.symbol] = res.value.data;
+    }
+  });
+
+  // Add fallback for missing
+  const fallback = {
+    CHF: { name: 'Swiss Franc', price: 0.8850, changePercent: -0.2, session: 'london' },
+    GBPUSD: { name: 'British Pound', price: 1.2650, changePercent: 0.1, session: 'london' },
+    EURUSD: { name: 'Euro/USD', price: 1.0850, changePercent: -0.1, session: 'london' }
+  };
+
+  Object.keys(fallback).forEach(symbol => {
+    if (!results[symbol]) {
+      results[symbol] = { ...fallback[symbol], isFallback: true };
+    }
+  });
+
+  // Calculate Gold/Silver ratio if we have gold price from futures
+  // This will be done at the API level when combining data
+
+  console.log(`London Instruments: fetched ${Object.keys(results).length} instruments`);
+  return results;
+}
+
+/**
+ * Fetch US session instruments
+ * HYG (High Yield), TLT (Treasuries) - Risk indicators
+ */
+export async function fetchUSInstruments() {
+  const symbols = Object.keys(US_SESSION_SYMBOLS);
+  const results = {};
+
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = US_SESSION_SYMBOLS[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
+
+      if (!meta || !meta.regularMarketPrice) return null;
+
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+
+      // Add interpretation for HYG
+      let interpretation = null;
+      if (config.symbol === 'HYG') {
+        interpretation = changePercent > 0.2 ? 'RISK-ON' :
+                         changePercent < -0.2 ? 'RISK-OFF' : 'NEUTRAL';
+      } else if (config.symbol === 'TLT') {
+        interpretation = changePercent > 0.3 ? 'FLIGHT-TO-SAFETY' :
+                         changePercent < -0.3 ? 'RISK-ON' : 'NEUTRAL';
+      }
+
+      return {
+        symbol: config.symbol,
+        data: {
+          name: config.name,
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          high: meta.regularMarketDayHigh || price,
+          low: meta.regularMarketDayLow || price,
+          session: 'us',
+          interpretation
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch US instrument ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
+
+  const fetchResults = await Promise.allSettled(fetchPromises);
+  fetchResults.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      results[res.value.symbol] = res.value.data;
+    }
+  });
+
+  // Add fallback for missing
+  const fallback = {
+    HYG: { name: 'High Yield Bond ETF', price: 78.50, changePercent: 0.1, session: 'us', interpretation: 'NEUTRAL' },
+    TLT: { name: '20-Year Treasury ETF', price: 92.30, changePercent: -0.2, session: 'us', interpretation: 'NEUTRAL' }
+  };
+
+  Object.keys(fallback).forEach(symbol => {
+    if (!results[symbol]) {
+      results[symbol] = { ...fallback[symbol], isFallback: true };
+    }
+  });
+
+  console.log(`US Instruments: fetched ${Object.keys(results).length} instruments`);
+  return results;
+}
+
+/**
+ * Get Gold/Silver ratio interpretation
+ */
+export function getGoldSilverRatio(goldPrice, silverPrice) {
+  if (!goldPrice || !silverPrice) return null;
+
+  const ratio = goldPrice / silverPrice;
+
+  let interpretation;
+  if (ratio > 80) interpretation = 'EXTREME_FEAR';      // Silver very cheap vs gold
+  else if (ratio > 70) interpretation = 'FEAR';         // Risk-off
+  else if (ratio > 60) interpretation = 'NEUTRAL';
+  else if (ratio > 50) interpretation = 'RISK_ON';      // Silver gaining
+  else interpretation = 'EXTREME_RISK_ON';              // Silver outperforming heavily
+
+  return {
+    ratio: parseFloat(ratio.toFixed(2)),
+    interpretation,
+    description: ratio > 70 ? 'Silver undervalued vs Gold (risk-off)' :
+                 ratio < 60 ? 'Silver outperforming (risk-on)' : 'Normal range'
   };
 }

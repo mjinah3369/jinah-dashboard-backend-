@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks, fetchTreasuryYields, fetchCryptoPrices, calculateExpectationMeters } from './services/yahooFinance.js';
+import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks, fetchTreasuryYields, fetchCryptoPrices, calculateExpectationMeters, fetchAsiaInstruments, fetchLondonInstruments, fetchUSInstruments, getGoldSilverRatio } from './services/yahooFinance.js';
 import { fetchEconomicCalendar, fetchEarningsCalendar } from './services/alphaVantage.js';
 import { fetchFredData } from './services/fred.js';
 import { fetchPolygonData } from './services/polygon.js';
@@ -1174,6 +1174,75 @@ app.post('/api/session/update', (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update session' });
+  }
+});
+
+// Get session-specific instruments (Phase 2)
+app.get('/api/session/instruments/:session', async (req, res) => {
+  try {
+    const session = req.params.session.toLowerCase();
+    let instruments;
+
+    switch (session) {
+      case 'asia':
+        instruments = await fetchAsiaInstruments();
+        break;
+      case 'london':
+        instruments = await fetchLondonInstruments();
+        // Add Gold/Silver ratio if we have gold price
+        if (cachedData?.instruments?.GC && cachedData?.instruments?.SI) {
+          instruments.goldSilverRatio = getGoldSilverRatio(
+            cachedData.instruments.GC.price,
+            cachedData.instruments.SI.price
+          );
+        }
+        break;
+      case 'us':
+        instruments = await fetchUSInstruments();
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid session. Use: asia, london, or us' });
+    }
+
+    res.json({
+      session,
+      instruments,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Session instruments error for ${req.params.session}:`, error);
+    res.status(500).json({ error: 'Failed to fetch session instruments' });
+  }
+});
+
+// Get all session instruments combined
+app.get('/api/session/instruments', async (req, res) => {
+  try {
+    const [asia, london, us] = await Promise.allSettled([
+      fetchAsiaInstruments(),
+      fetchLondonInstruments(),
+      fetchUSInstruments()
+    ]);
+
+    const result = {
+      asia: asia.status === 'fulfilled' ? asia.value : {},
+      london: london.status === 'fulfilled' ? london.value : {},
+      us: us.status === 'fulfilled' ? us.value : {},
+      timestamp: new Date().toISOString()
+    };
+
+    // Add Gold/Silver ratio
+    if (cachedData?.instruments?.GC && cachedData?.instruments?.SI) {
+      result.london.goldSilverRatio = getGoldSilverRatio(
+        cachedData.instruments.GC.price,
+        cachedData.instruments.SI.price
+      );
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Session instruments error:', error);
+    res.status(500).json({ error: 'Failed to fetch session instruments' });
   }
 });
 
