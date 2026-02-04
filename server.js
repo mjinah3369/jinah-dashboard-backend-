@@ -42,6 +42,13 @@ import {
   clearScannerData
 } from './services/scannerWebhook.js';
 import {
+  getCurrentSession,
+  getNextSession,
+  updateSessionLevels,
+  getSessionHandoff,
+  getSessionSummary
+} from './services/sessionEngine.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1119,6 +1126,57 @@ app.delete('/api/scanner', (req, res) => {
   }
 });
 
+// ============================================================================
+// SESSION TRACKING ENDPOINTS (Phase 1 - Session Engine)
+// ============================================================================
+
+// Get current session info (Asia/London/US/etc.)
+app.get('/api/session/current', (req, res) => {
+  try {
+    const current = getCurrentSession();
+    const next = getNextSession();
+    res.json({
+      current,
+      next,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Session error:', error);
+    res.status(500).json({ error: 'Failed to get session info' });
+  }
+});
+
+// Get all session levels (for handoff between sessions)
+app.get('/api/session/levels', (req, res) => {
+  try {
+    const handoff = getSessionHandoff();
+    res.json(handoff);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get session levels' });
+  }
+});
+
+// Get session summary for a specific session (for AI analysis)
+app.get('/api/session/summary/:session', (req, res) => {
+  try {
+    const summary = getSessionSummary(req.params.session.toUpperCase());
+    res.json(summary || { error: 'Session not found' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get session summary' });
+  }
+});
+
+// Update session data (from TradingView webhook or other sources)
+app.post('/api/session/update', (req, res) => {
+  try {
+    const { session, priceData } = req.body;
+    updateSessionLevels(session, priceData);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update session' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
@@ -1127,4 +1185,5 @@ app.listen(PORT, () => {
   console.log(`High Impact News: http://localhost:${PORT}/api/news/high-impact`);
   console.log(`Earnings Calendar: http://localhost:${PORT}/api/earnings`);
   console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
+  console.log(`Session Info: http://localhost:${PORT}/api/session/current`);
 });
