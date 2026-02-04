@@ -66,6 +66,12 @@ import {
   addSweep
 } from './services/sweepTracker.js';
 import {
+  runFullAnalysis,
+  getQuickSessionBrief,
+  clearCache as clearAICache,
+  getCacheStatus as getAICacheStatus
+} from './services/aiAgents.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1486,6 +1492,121 @@ app.delete('/api/sweeps', (req, res) => {
     res.json({ success: true, message: 'Sweep history cleared' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to clear sweep history' });
+  }
+});
+
+// ============================================================================
+// AI AGENT ENDPOINTS (Phase 5)
+// ============================================================================
+
+// Run full AI analysis pipeline
+app.get('/api/analysis/full', async (req, res) => {
+  try {
+    // Gather session info
+    const session = {
+      current: getCurrentSession(),
+      next: getNextSession()
+    };
+
+    // Get news (use cached or fetch)
+    let news = [];
+    try {
+      news = await analyzeAllSourcesNews({ lastHours: 2 });
+    } catch (e) {
+      console.warn('Could not fetch news for AI analysis:', e.message);
+    }
+
+    // Get levels
+    const levels = getSessionHandoff();
+
+    // Get sweeps
+    const sweeps = getRecentSweeps(null, 10);
+
+    // Get macro data
+    const macro = {
+      vix: cachedData?.instruments?.VIX?.price || 16,
+      vixChange: cachedData?.instruments?.VIX?.changePercent || 0,
+      dxy: cachedData?.currencies?.DX?.price || 104,
+      dxyChange: cachedData?.currencies?.DX?.changePercent || 0,
+      yield10y: cachedData?.treasuryYields?.['10Y']?.yield || 4.5,
+      sectors: cachedData?.sectors || {},
+      hyg: null,
+      tlt: null
+    };
+
+    // Try to get HYG/TLT
+    try {
+      const usInstruments = await fetchUSInstruments();
+      macro.hyg = usInstruments.HYG;
+      macro.tlt = usInstruments.TLT;
+    } catch (e) {
+      console.warn('Could not fetch HYG/TLT:', e.message);
+    }
+
+    // Run full analysis
+    const analysis = await runFullAnalysis({
+      news,
+      levels,
+      sweeps,
+      macro,
+      session
+    });
+
+    res.json(analysis);
+  } catch (error) {
+    console.error('Full analysis error:', error);
+    res.status(500).json({ error: 'Analysis failed', message: error.message });
+  }
+});
+
+// Get quick session brief (lighter weight)
+app.get('/api/analysis/brief', async (req, res) => {
+  try {
+    const session = {
+      current: getCurrentSession(),
+      next: getNextSession()
+    };
+
+    // Get recent news
+    let news = [];
+    try {
+      news = await analyzeAllSourcesNews({ lastHours: 1 });
+    } catch (e) {
+      console.warn('Could not fetch news for brief:', e.message);
+    }
+
+    const brief = await getQuickSessionBrief(session, news);
+
+    res.json({
+      session: session.current.name,
+      isIB: session.current.isIB,
+      ibMinutesRemaining: session.current.ibMinutesRemaining,
+      ...brief,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Session brief error:', error);
+    res.status(500).json({ error: 'Brief generation failed', message: error.message });
+  }
+});
+
+// Get AI cache status
+app.get('/api/analysis/cache', (req, res) => {
+  try {
+    const status = getAICacheStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get cache status' });
+  }
+});
+
+// Clear AI cache
+app.post('/api/analysis/cache/clear', (req, res) => {
+  try {
+    clearAICache();
+    res.json({ success: true, message: 'AI cache cleared' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to clear cache' });
   }
 });
 
