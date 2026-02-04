@@ -49,6 +49,15 @@ import {
   getSessionSummary
 } from './services/sessionEngine.js';
 import {
+  calculateTicks,
+  calculateTickValue,
+  getNearestLevels,
+  calculatePivots,
+  getATRTargets,
+  TICK_SIZES,
+  TICK_VALUES
+} from './services/levelCalculator.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1243,6 +1252,134 @@ app.get('/api/session/instruments', async (req, res) => {
   } catch (error) {
     console.error('Session instruments error:', error);
     res.status(500).json({ error: 'Failed to fetch session instruments' });
+  }
+});
+
+// ============================================================================
+// LEVEL CALCULATOR ENDPOINTS (Phase 3)
+// ============================================================================
+
+// Get levels with tick distance for a symbol
+app.get('/api/levels/:symbol', async (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+
+    // Get current price from cache or fetch
+    let currentPrice;
+    if (cachedData?.instruments?.[symbol]) {
+      currentPrice = cachedData.instruments[symbol].price;
+    } else if (cachedData?.currencies?.[symbol]) {
+      currentPrice = cachedData.currencies[symbol].price;
+    } else {
+      // Fetch fresh if not in cache
+      const futures = await fetchYahooFinanceFutures();
+      currentPrice = futures[symbol]?.price;
+    }
+
+    if (!currentPrice) {
+      return res.status(404).json({ error: `Price not found for ${symbol}` });
+    }
+
+    // Get session levels
+    const sessionData = getSessionHandoff();
+
+    // Build levels object
+    const levels = {
+      'PDH': cachedData?.instruments?.[symbol]?.high || currentPrice * 1.005,
+      'PDL': cachedData?.instruments?.[symbol]?.low || currentPrice * 0.995,
+      'Asia High': sessionData.sessions.ASIA?.high,
+      'Asia Low': sessionData.sessions.ASIA?.low,
+      'Asia IB High': sessionData.initialBalances.ASIA?.high,
+      'Asia IB Low': sessionData.initialBalances.ASIA?.low,
+      'London High': sessionData.sessions.LONDON?.high,
+      'London Low': sessionData.sessions.LONDON?.low,
+      'London IB High': sessionData.initialBalances.LONDON?.high,
+      'London IB Low': sessionData.initialBalances.LONDON?.low,
+      'US IB High': sessionData.initialBalances.US_RTH?.high,
+      'US IB Low': sessionData.initialBalances.US_RTH?.low
+    };
+
+    // Calculate pivots if we have PDH/PDL
+    const pdh = levels['PDH'];
+    const pdl = levels['PDL'];
+    const prevClose = cachedData?.instruments?.[symbol]?.previousClose || currentPrice;
+
+    if (pdh && pdl && prevClose) {
+      const pivots = calculatePivots(pdh, pdl, prevClose);
+      levels['Daily Pivot'] = pivots.pivot;
+      levels['R1'] = pivots.r1;
+      levels['R2'] = pivots.r2;
+      levels['S1'] = pivots.s1;
+      levels['S2'] = pivots.s2;
+    }
+
+    const result = getNearestLevels(symbol, currentPrice, levels);
+
+    res.json({
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Levels error for ${req.params.symbol}:`, error);
+    res.status(500).json({ error: 'Failed to calculate levels' });
+  }
+});
+
+// Get tick info for a symbol
+app.get('/api/ticks/:symbol', (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+    const tickSize = TICK_SIZES[symbol];
+    const tickValue = TICK_VALUES[symbol];
+
+    if (!tickSize) {
+      return res.status(404).json({ error: `Tick info not found for ${symbol}` });
+    }
+
+    res.json({
+      symbol,
+      tickSize,
+      tickValue,
+      example: {
+        onePoint: {
+          ticks: Math.round(1 / tickSize),
+          dollarValue: Math.round(1 / tickSize) * tickValue
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get tick info' });
+  }
+});
+
+// Calculate distance between two prices
+app.get('/api/ticks/:symbol/distance', (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ error: 'Missing from or to price' });
+    }
+
+    const fromPrice = parseFloat(from);
+    const toPrice = parseFloat(to);
+
+    const ticks = calculateTicks(symbol, fromPrice, toPrice);
+    const dollarValue = calculateTickValue(symbol, Math.abs(ticks));
+
+    res.json({
+      symbol,
+      from: fromPrice,
+      to: toPrice,
+      ticks: Math.abs(ticks),
+      direction: ticks > 0 ? 'up' : ticks < 0 ? 'down' : 'flat',
+      dollarValue,
+      tickSize: TICK_SIZES[symbol] || 0.01,
+      tickValue: TICK_VALUES[symbol] || 10.00
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to calculate distance' });
   }
 });
 
