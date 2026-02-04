@@ -58,6 +58,14 @@ import {
   TICK_VALUES
 } from './services/levelCalculator.js';
 import {
+  detectSweep,
+  getRecentSweeps,
+  getSweepSummary,
+  getReclaimedLevels,
+  clearSweepHistory,
+  addSweep
+} from './services/sweepTracker.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1380,6 +1388,104 @@ app.get('/api/ticks/:symbol/distance', (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to calculate distance' });
+  }
+});
+
+// ============================================================================
+// SWEEP TRACKER ENDPOINTS (Phase 4)
+// ============================================================================
+
+// Receive sweep detection from TradingView webhook or manual entry
+app.post('/api/sweeps/detect', (req, res) => {
+  try {
+    const sweeps = detectSweep(req.body);
+    res.json({
+      detected: sweeps.length,
+      sweeps,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Sweep detection error:', error);
+    res.status(500).json({ error: 'Sweep detection failed' });
+  }
+});
+
+// Add a manual sweep entry
+app.post('/api/sweeps/add', (req, res) => {
+  try {
+    const sweep = addSweep(req.body);
+    res.json({
+      success: true,
+      sweep,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to add sweep' });
+  }
+});
+
+// Get recent sweeps (optionally filtered by symbol)
+app.get('/api/sweeps', (req, res) => {
+  try {
+    const { symbol, limit } = req.query;
+    const sweeps = getRecentSweeps(symbol, limit ? parseInt(limit) : 20);
+    res.json({
+      count: sweeps.length,
+      sweeps,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get sweeps' });
+  }
+});
+
+// Get sweeps for a specific symbol
+app.get('/api/sweeps/:symbol', (req, res) => {
+  try {
+    const sweeps = getRecentSweeps(req.params.symbol, 20);
+    res.json({
+      symbol: req.params.symbol.toUpperCase(),
+      count: sweeps.length,
+      sweeps,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get sweeps' });
+  }
+});
+
+// Get sweep summary (for AI analysis)
+app.get('/api/sweeps/summary/:symbol?', (req, res) => {
+  try {
+    const summary = getSweepSummary(req.params.symbol);
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get sweep summary' });
+  }
+});
+
+// Get reclaimed levels (high probability reversal zones)
+app.get('/api/sweeps/reclaimed/:symbol?', (req, res) => {
+  try {
+    const levels = getReclaimedLevels(req.params.symbol);
+    res.json({
+      count: levels.length,
+      levels,
+      description: 'Levels that were swept and reclaimed - potential reversal zones',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get reclaimed levels' });
+  }
+});
+
+// Clear sweep history (for new day)
+app.delete('/api/sweeps', (req, res) => {
+  try {
+    clearSweepHistory();
+    res.json({ success: true, message: 'Sweep history cleared' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to clear sweep history' });
   }
 });
 
