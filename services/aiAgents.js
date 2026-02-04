@@ -45,7 +45,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -88,7 +88,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -135,7 +135,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -184,7 +184,7 @@ Provide a unified trading brief. Respond in JSON format ONLY (no markdown, no ex
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 1500,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -261,7 +261,7 @@ Respond in JSON format ONLY:
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }]
     });
