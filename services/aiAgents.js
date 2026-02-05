@@ -16,6 +16,12 @@ import { fetchAllEnergyData, getEIASummaryForAgent } from './eiaApi.js';
 import { fetchAllAgricultureData, getUSDASSummaryForAgent } from './usdaApi.js';
 import { getAllCOTData, getCOTSummaryForAgent } from './cftcCot.js';
 import { getPutCallRatio, getPutCallSummaryForAgent } from './cboePutCall.js';
+import {
+  fetchEnergyReports,
+  fetchAgricultureReports,
+  fetchCentralBankCalendar,
+  buildReportsCalendar
+} from './fundamentalReports.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -24,6 +30,86 @@ const anthropic = new Anthropic({
 // Cache for agent results (5 minute TTL)
 const agentCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
+
+// ============================================================================
+// FUNDAMENTAL REPORTS HELPER - Formats report calendar for AI prompts
+// ============================================================================
+
+/**
+ * Get today's and upcoming reports formatted for AI prompt
+ * Includes bullish/bearish scenarios for context
+ */
+function getReportsForAIPrompt() {
+  try {
+    const energyReports = fetchEnergyReports();
+    const agReports = fetchAgricultureReports();
+    const centralBankReports = fetchCentralBankCalendar();
+
+    const allReports = [...energyReports, ...agReports, ...centralBankReports];
+
+    // Filter to today and tomorrow only
+    const todayReports = allReports.filter(r => r.isToday);
+    const tomorrowReports = allReports.filter(r => r.isTomorrow);
+
+    const lines = [];
+
+    if (todayReports.length > 0) {
+      lines.push('TODAY\'S REPORTS (High Alert):');
+      todayReports.forEach(r => {
+        lines.push(`  - ${r.shortName} at ${r.time} [${r.importance}]`);
+        lines.push(`    Affects: ${r.affectedInstruments.join(', ')}`);
+        if (r.scenarios) {
+          lines.push(`    Bullish if: ${r.scenarios.bullish}`);
+          lines.push(`    Bearish if: ${r.scenarios.bearish}`);
+        }
+      });
+    }
+
+    if (tomorrowReports.length > 0) {
+      lines.push('TOMORROW\'S REPORTS (Prepare):');
+      tomorrowReports.forEach(r => {
+        lines.push(`  - ${r.shortName} at ${r.time} [${r.importance}] → ${r.affectedInstruments.join(', ')}`);
+      });
+    }
+
+    // High importance reports this week
+    const highImportance = allReports.filter(r => r.importance === 'HIGH' && !r.isToday && !r.isTomorrow).slice(0, 5);
+    if (highImportance.length > 0) {
+      lines.push('HIGH IMPACT THIS WEEK:');
+      highImportance.forEach(r => {
+        lines.push(`  - ${r.shortName} on ${r.dateLabel} → ${r.affectedInstruments.join(', ')}`);
+      });
+    }
+
+    return {
+      summary: lines.join('\n'),
+      todayCount: todayReports.length,
+      tomorrowCount: tomorrowReports.length,
+      todayReports,
+      tomorrowReports,
+      eventRisk: todayReports.some(r => r.importance === 'HIGH') ? 'HIGH' :
+                 todayReports.length > 0 ? 'MEDIUM' : 'LOW'
+    };
+  } catch (err) {
+    console.warn('Could not fetch fundamental reports:', err.message);
+    return { summary: 'Report calendar unavailable', todayCount: 0, tomorrowCount: 0, eventRisk: 'UNKNOWN' };
+  }
+}
+
+/**
+ * Check if a specific instrument has a report today
+ */
+function getInstrumentReportsToday(symbol) {
+  try {
+    const energyReports = fetchEnergyReports();
+    const agReports = fetchAgricultureReports();
+    const allReports = [...energyReports, ...agReports];
+
+    return allReports.filter(r => r.isToday && r.affectedInstruments.includes(symbol));
+  } catch (err) {
+    return [];
+  }
+}
 
 // ============================================================================
 // NEWS KEYWORD DICTIONARY - Maps keywords to affected instruments
@@ -448,6 +534,15 @@ async function macroAgent(macroData, priceData = null) {
     console.log('Could not fetch fundamental data:', err.message);
   }
 
+  // Fetch report calendar with scenarios
+  let reportsData = { summary: '', todayCount: 0, eventRisk: 'LOW' };
+  try {
+    reportsData = getReportsForAIPrompt();
+    fundamentalData.reportsCalendar = reportsData;
+  } catch (err) {
+    console.log('Could not fetch reports calendar:', err.message);
+  }
+
   // Build calculated metrics section for prompt
   let metricsSection = '';
   if (calculatedMetrics) {
@@ -494,6 +589,15 @@ ${getPutCallSummaryForAgent(fundamentalData.putCallData)}
 `;
   }
 
+  // Add reports calendar with scenarios
+  if (reportsData.summary) {
+    fundamentalSection += `
+SCHEDULED REPORTS & EVENTS:
+Event Risk Level: ${reportsData.eventRisk}
+${reportsData.summary}
+`;
+  }
+
   const prompt = `You are a macro analyst for futures trading. Analyze these conditions:
 
 RAW DATA:
@@ -511,6 +615,7 @@ IMPORTANT: Use the CALCULATED METRICS and FUNDAMENTAL DATA above as your primary
 - EIA data for CL/NG direction (draws = bullish, builds = bearish)
 - COT positioning extremes (crowded long = contrarian bearish, crowded short = contrarian bullish)
 - Put/Call ratio for sentiment (high = contrarian bullish, low = contrarian bearish)
+- SCHEDULED REPORTS: If a report is TODAY, warn about volatility for affected instruments and provide the bullish/bearish scenarios
 
 Respond in JSON format ONLY (no markdown, no explanation):
 {
@@ -522,6 +627,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
   "yieldSignals": {"realYield": "", "carryTrade": ""},
   "energySignals": {"crude": "", "natgas": ""},
   "positioningSignals": {"cotExtreme": "", "putCallSignal": ""},
+  "eventRisk": {"level": "HIGH/MEDIUM/LOW", "reports": [], "warning": ""},
   "correlationAlerts": [],
   "overallBias": "bullish/bearish/neutral"
 }`;
@@ -558,6 +664,9 @@ async function masterOrchestrator(newsResult, levelsResult, macroResult, session
   const eventRisk = getEventRiskSummary();
   const reportSchedule = formatReportsForPrompt();
 
+  // Get detailed reports with bullish/bearish scenarios
+  const detailedReports = getReportsForAIPrompt();
+
   const prompt = `You are the chief trading strategist. Synthesize these analyses for the ${sessionInfo.current?.name || 'current'} session:
 
 NEWS ANALYSIS:
@@ -577,7 +686,15 @@ SESSION CONTEXT:
 
 ${reportSchedule}
 
-IMPORTANT: Factor in the EVENT RISK level and any scheduled reports when making your analysis. If major reports are scheduled (EIA, CPI, NFP, WASDE), warn about volatility windows and adjust confidence accordingly.
+DETAILED REPORT CALENDAR WITH SCENARIOS:
+${detailedReports.summary || 'No reports scheduled'}
+Event Risk Level: ${detailedReports.eventRisk || 'LOW'}
+
+IMPORTANT: Factor in the EVENT RISK level and any scheduled reports when making your analysis. If major reports are scheduled (EIA, CPI, NFP, WASDE):
+1. Warn about volatility windows for affected instruments
+2. Use the bullish/bearish scenarios provided to guide expectations
+3. Adjust confidence based on event risk (HIGH = lower confidence, wait for report)
+4. Include specific times when traders should be cautious
 
 Provide a unified trading brief. Respond in JSON format ONLY (no markdown, no explanation):
 {
@@ -586,7 +703,8 @@ Provide a unified trading brief. Respond in JSON format ONLY (no markdown, no ex
   "keyLevels": [{"symbol": "", "level": "", "price": 0, "action": "watch/fade/breakout"}],
   "risks": [],
   "eventRisk": "${eventRisk.riskLevel}",
-  "volatilityWindows": [],
+  "reportAlerts": [{"report": "", "time": "", "affects": [], "bullishIf": "", "bearishIf": ""}],
+  "volatilityWindows": [{"time": "", "reason": "", "affectedSymbols": []}],
   "tradingPlan": "What to do in this session"
 }`;
 
