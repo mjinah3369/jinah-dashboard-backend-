@@ -694,6 +694,14 @@ export async function generateFinalAnalysis(marketData, options = {}) {
     console.warn('Could not fetch energy reports:', err.message);
   }
 
+  // Fetch agriculture reports
+  let agReports = [];
+  try {
+    agReports = fetchAgricultureReports();
+  } catch (err) {
+    console.warn('Could not fetch agriculture reports:', err.message);
+  }
+
   // Fetch central bank calendar
   let centralBankEvents = [];
   try {
@@ -702,10 +710,47 @@ export async function generateFinalAnalysis(marketData, options = {}) {
     console.warn('Could not fetch central bank calendar:', err.message);
   }
 
-  // Get today's and upcoming reports
-  const todayReports = energyReports.filter(r => r.isToday);
-  const upcomingReports = energyReports.filter(r => r.isTomorrow).slice(0, 3);
+  // Get today's and upcoming reports (combine energy + agriculture)
+  const allScheduledReports = [...energyReports, ...agReports, ...centralBankEvents];
+  const todayReports = allScheduledReports.filter(r => r.isToday);
+  const upcomingReports = allScheduledReports.filter(r => r.isTomorrow).slice(0, 5);
   const nextFOMC = centralBankEvents.find(e => e.shortName === 'FOMC');
+
+  // Calculate event risk level
+  const hasHighImpactToday = todayReports.some(r => r.importance === 'HIGH');
+  const hasMediumImpactToday = todayReports.some(r => r.importance === 'MEDIUM');
+  const eventRisk = hasHighImpactToday ? 'HIGH' : hasMediumImpactToday ? 'MEDIUM' : 'LOW';
+
+  // Fetch COT positioning data
+  let cotData = null;
+  let cotExtremes = { crowdedLong: [], crowdedShort: [] };
+  try {
+    cotData = getAllCOTData();
+    if (cotData._summary?.extremes) {
+      cotExtremes = {
+        crowdedLong: cotData._summary.extremes.crowdedLong || [],
+        crowdedShort: cotData._summary.extremes.crowdedShort || []
+      };
+    }
+  } catch (err) {
+    console.warn('Could not fetch COT data:', err.message);
+  }
+
+  // Fetch Put/Call sentiment
+  let putCallData = null;
+  let putCallSentiment = { sentiment: 'NEUTRAL', implication: 'No edge', equityRatio: 0.72 };
+  try {
+    putCallData = getPutCallRatio();
+    if (putCallData.summary) {
+      putCallSentiment = {
+        sentiment: putCallData.summary.overallSentiment,
+        implication: putCallData.summary.tradingImplication,
+        equityRatio: putCallData.summary.equityRatio
+      };
+    }
+  } catch (err) {
+    console.warn('Could not fetch Put/Call data:', err.message);
+  }
 
   // Fetch technical analysis for all instruments
   let technicals = {};
@@ -793,8 +838,28 @@ export async function generateFinalAnalysis(marketData, options = {}) {
     },
     earningsToday: earnings.slice(0, 5),
     economicReleases: economicReleases.slice(0, 5),
-    energyReportsToday: todayReports,
-    upcomingReports: upcomingReports,
+    // Scheduled reports with scenarios
+    scheduledReportsToday: todayReports.map(r => ({
+      name: r.name,
+      shortName: r.shortName,
+      time: r.time,
+      importance: r.importance,
+      affectedInstruments: r.affectedInstruments || [],
+      scenarios: r.scenarios || null
+    })),
+    upcomingReports: upcomingReports.map(r => ({
+      name: r.name,
+      shortName: r.shortName,
+      dateLabel: r.dateLabel,
+      importance: r.importance,
+      affectedInstruments: r.affectedInstruments || []
+    })),
+    // Event risk level for position sizing
+    eventRisk: eventRisk,
+    // COT positioning extremes
+    cotExtremes: cotExtremes,
+    // Put/Call sentiment
+    putCallSentiment: putCallSentiment,
     nextFOMC: nextFOMC ? {
       date: nextFOMC.date,
       dateLabel: nextFOMC.dateLabel,
