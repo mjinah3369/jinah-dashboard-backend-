@@ -77,6 +77,10 @@ import {
   explainInstrumentBias
 } from './services/chatbot.js';
 import {
+  getESCommandCenter,
+  getBiasBreakdown
+} from './services/esCommandCenter.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1799,6 +1803,38 @@ app.post('/api/chat/instrument', async (req, res) => {
   }
 });
 
+// ============================================================================
+// ES COMMAND CENTER ENDPOINTS - Everything driving ES right now
+// ============================================================================
+
+// ES Command Center — Real-time drivers and institutional context
+app.get('/api/es/live', async (req, res) => {
+  try {
+    const data = await getESCommandCenter();
+    res.json(data);
+  } catch (error) {
+    console.error('ES Command Center error:', error);
+    res.status(500).json({
+      error: 'Failed to get ES data',
+      message: error.message
+    });
+  }
+});
+
+// ES Bias Breakdown — Scoring transparency for modal
+app.get('/api/es/bias-breakdown', async (req, res) => {
+  try {
+    const breakdown = await getBiasBreakdown();
+    res.json(breakdown);
+  } catch (error) {
+    console.error('ES Bias Breakdown error:', error);
+    res.status(500).json({
+      error: 'Failed to get bias breakdown',
+      message: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
@@ -1809,4 +1845,5 @@ app.listen(PORT, () => {
   console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
   console.log(`Session Info: http://localhost:${PORT}/api/session/current`);
   console.log(`Chatbot: http://localhost:${PORT}/api/chat`);
+  console.log(`ES Command Center: http://localhost:${PORT}/api/es/live`);
 });
