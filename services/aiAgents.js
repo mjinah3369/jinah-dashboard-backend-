@@ -11,6 +11,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { calculateAllMetrics } from './calculatedMetrics.js';
+import { formatReportsForPrompt, getEventRiskSummary } from './reportSchedule.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -497,8 +498,13 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
 /**
  * MASTER ORCHESTRATOR - Synthesizes all agent outputs
+ * Enhanced with event risk awareness from report schedule
  */
 async function masterOrchestrator(newsResult, levelsResult, macroResult, sessionInfo) {
+  // Get today's scheduled reports and event risk
+  const eventRisk = getEventRiskSummary();
+  const reportSchedule = formatReportsForPrompt();
+
   const prompt = `You are the chief trading strategist. Synthesize these analyses for the ${sessionInfo.current?.name || 'current'} session:
 
 NEWS ANALYSIS:
@@ -516,12 +522,18 @@ SESSION CONTEXT:
 - Next Session: ${sessionInfo.next?.name || 'Unknown'} in ${sessionInfo.next?.countdown || 'N/A'}
 - Focus Symbols: ${sessionInfo.current?.focus?.join(', ') || 'N/A'}
 
+${reportSchedule}
+
+IMPORTANT: Factor in the EVENT RISK level and any scheduled reports when making your analysis. If major reports are scheduled (EIA, CPI, NFP, WASDE), warn about volatility windows and adjust confidence accordingly.
+
 Provide a unified trading brief. Respond in JSON format ONLY (no markdown, no explanation):
 {
   "sessionBrief": "2-3 sentence summary of what to expect this session",
   "focusSymbols": [{"symbol": "", "bias": "bullish/bearish/neutral", "confidence": 0, "reason": ""}],
   "keyLevels": [{"symbol": "", "level": "", "price": 0, "action": "watch/fade/breakout"}],
   "risks": [],
+  "eventRisk": "${eventRisk.riskLevel}",
+  "volatilityWindows": [],
   "tradingPlan": "What to do in this session"
 }`;
 
@@ -656,5 +668,8 @@ export {
   NEWS_KEYWORD_MAP,
   KEYWORD_GROUP_TO_SYMBOLS,
   // Re-export calculated metrics
-  calculateAllMetrics
+  calculateAllMetrics,
+  // Re-export report schedule
+  formatReportsForPrompt,
+  getEventRiskSummary
 };
