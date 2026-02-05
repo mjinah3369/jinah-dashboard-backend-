@@ -99,8 +99,8 @@ const SECTOR_SYMBOLS = {
 const ASIA_SESSION_SYMBOLS = {
   '^HSI': { name: 'Hang Seng Index', symbol: 'HSI', session: 'asia' },
   '000001.SS': { name: 'Shanghai Composite', symbol: 'SHANGHAI', session: 'asia' },
-  'AUDUSD=X': { name: 'Australian Dollar', symbol: 'AUDUSD', session: 'asia' },
-  'USDJPY=X': { name: 'USD/JPY', symbol: 'USDJPY', session: 'asia' }
+  '6A=F': { name: 'Australian Dollar Futures', symbol: '6A', session: 'asia' },
+  '6J=F': { name: 'Japanese Yen Futures', symbol: '6J', session: 'asia' }
 };
 
 // London Session Additions
@@ -1237,12 +1237,16 @@ export async function fetchAsiaInstruments() {
       const change = price - prevClose;
       const changePercent = prevClose ? (change / prevClose * 100) : 0;
 
+      // Determine decimal places based on instrument
+      const decimals = config.symbol === '6J' ? 6 :
+                       config.symbol === '6A' ? 4 : 2;
+
       return {
         symbol: config.symbol,
         data: {
           name: config.name,
-          price: parseFloat(price.toFixed(config.symbol.includes('USD') ? 4 : 2)),
-          change: parseFloat(change.toFixed(config.symbol.includes('USD') ? 4 : 2)),
+          price: parseFloat(price.toFixed(decimals)),
+          change: parseFloat(change.toFixed(decimals)),
           changePercent: parseFloat(changePercent.toFixed(2)),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
@@ -1267,8 +1271,8 @@ export async function fetchAsiaInstruments() {
   const fallback = {
     HSI: { name: 'Hang Seng Index', price: 17800, changePercent: -0.5, session: 'asia' },
     SHANGHAI: { name: 'Shanghai Composite', price: 3050, changePercent: 0.2, session: 'asia' },
-    AUDUSD: { name: 'Australian Dollar', price: 0.6550, changePercent: -0.3, session: 'asia' },
-    USDJPY: { name: 'USD/JPY', price: 149.50, changePercent: 0.1, session: 'asia' }
+    '6A': { name: 'Australian Dollar Futures', price: 0.6550, changePercent: -0.3, session: 'asia' },
+    '6J': { name: 'Japanese Yen Futures', price: 0.0067, changePercent: 0.1, session: 'asia' }
   };
 
   Object.keys(fallback).forEach(symbol => {
