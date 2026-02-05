@@ -1714,6 +1714,7 @@ app.post('/api/analysis/cache/clear', (req, res) => {
 // ============================================================================
 
 // Main chat endpoint - ask any question about the dashboard
+// Uses cached data only for speed - no fresh fetches
 app.post('/api/chat', async (req, res) => {
   try {
     const { question } = req.body;
@@ -1725,38 +1726,18 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Gather current dashboard data for context
-    let dashboardData = {};
-    try {
-      // Try to get fresh final analysis data
-      const now = Date.now();
-      let marketData;
-      if (marketDataCache && marketDataCacheTime && (now - marketDataCacheTime) < MARKET_DATA_CACHE_DURATION) {
-        marketData = marketDataCache;
-      } else {
-        const [futuresResult, currencyResult, sectorResult] = await Promise.allSettled([
-          fetchYahooFinanceFutures(),
-          fetchCurrencyFutures(),
-          fetchSectorETFs()
-        ]);
-        marketData = {
-          futures: futuresResult.status === 'fulfilled' ? futuresResult.value : {},
-          currencies: currencyResult.status === 'fulfilled' ? currencyResult.value : {},
-          sectors: sectorResult.status === 'fulfilled' ? sectorResult.value : {}
-        };
-      }
+    // Use whatever cached data we have - don't fetch fresh (too slow)
+    // The knowledge base in chatbot.js has all the market logic already
+    const dashboardData = {
+      instruments: cachedData?.instruments || {},
+      currencies: cachedData?.currencies || {},
+      sectors: cachedData?.sectors || {},
+      volatility: cachedData?.volatility || {},
+      session: getCurrentSession(),
+      nextSession: getNextSession()
+    };
 
-      // Get final analysis data (cached)
-      const { generateFinalAnalysis } = await import('./services/finalAnalysis.js');
-      dashboardData = await generateFinalAnalysis(marketData);
-
-    } catch (e) {
-      console.warn('Could not get full dashboard data for chat:', e.message);
-      // Use cached data if available
-      dashboardData = cachedData || {};
-    }
-
-    // Answer the question
+    // Answer the question (fast - just uses knowledge base + Claude)
     const response = await answerQuestion(question, dashboardData);
 
     res.json(response);
@@ -1804,18 +1785,8 @@ app.post('/api/chat/instrument', async (req, res) => {
       });
     }
 
-    // Get instrument data if not provided
-    let data = instrumentData;
-    if (!data) {
-      // Try to get from final analysis
-      try {
-        const { generateFinalAnalysis } = await import('./services/finalAnalysis.js');
-        const analysis = await generateFinalAnalysis({});
-        data = analysis.instruments?.[symbol.toUpperCase()] || {};
-      } catch (e) {
-        data = cachedData?.instruments?.[symbol.toUpperCase()] || {};
-      }
-    }
+    // Use cached data only - don't fetch fresh (too slow)
+    const data = instrumentData || cachedData?.instruments?.[symbol.toUpperCase()] || {};
 
     const response = await explainInstrumentBias(symbol, data, cachedData || {});
     res.json(response);
