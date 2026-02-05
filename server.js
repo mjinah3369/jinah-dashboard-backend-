@@ -72,6 +72,11 @@ import {
   getCacheStatus as getAICacheStatus
 } from './services/aiAgents.js';
 import {
+  answerQuestion,
+  explainHeadline,
+  explainInstrumentBias
+} from './services/chatbot.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1704,6 +1709,125 @@ app.post('/api/analysis/cache/clear', (req, res) => {
   }
 });
 
+// ============================================================================
+// CHATBOT ENDPOINTS - Ask questions about the dashboard
+// ============================================================================
+
+// Main chat endpoint - ask any question about the dashboard
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { question } = req.body;
+
+    if (!question || typeof question !== 'string') {
+      return res.status(400).json({
+        error: 'Missing question',
+        message: 'Please provide a question in the request body'
+      });
+    }
+
+    // Gather current dashboard data for context
+    let dashboardData = {};
+    try {
+      // Try to get fresh final analysis data
+      const now = Date.now();
+      let marketData;
+      if (marketDataCache && marketDataCacheTime && (now - marketDataCacheTime) < MARKET_DATA_CACHE_DURATION) {
+        marketData = marketDataCache;
+      } else {
+        const [futuresResult, currencyResult, sectorResult] = await Promise.allSettled([
+          fetchYahooFinanceFutures(),
+          fetchCurrencyFutures(),
+          fetchSectorETFs()
+        ]);
+        marketData = {
+          futures: futuresResult.status === 'fulfilled' ? futuresResult.value : {},
+          currencies: currencyResult.status === 'fulfilled' ? currencyResult.value : {},
+          sectors: sectorResult.status === 'fulfilled' ? sectorResult.value : {}
+        };
+      }
+
+      // Get final analysis data (cached)
+      const { generateFinalAnalysis } = await import('./services/finalAnalysis.js');
+      dashboardData = await generateFinalAnalysis(marketData);
+
+    } catch (e) {
+      console.warn('Could not get full dashboard data for chat:', e.message);
+      // Use cached data if available
+      dashboardData = cachedData || {};
+    }
+
+    // Answer the question
+    const response = await answerQuestion(question, dashboardData);
+
+    res.json(response);
+  } catch (error) {
+    console.error('Chat error:', error);
+    res.status(500).json({
+      error: 'Chat failed',
+      message: error.message
+    });
+  }
+});
+
+// Explain a specific headline's sentiment
+app.post('/api/chat/headline', async (req, res) => {
+  try {
+    const { headline, sentiment } = req.body;
+
+    if (!headline) {
+      return res.status(400).json({
+        error: 'Missing headline',
+        message: 'Please provide a headline to explain'
+      });
+    }
+
+    const response = await explainHeadline(headline, sentiment || 'unknown');
+    res.json(response);
+  } catch (error) {
+    console.error('Headline explanation error:', error);
+    res.status(500).json({
+      error: 'Explanation failed',
+      message: error.message
+    });
+  }
+});
+
+// Explain why an instrument has a specific bias
+app.post('/api/chat/instrument', async (req, res) => {
+  try {
+    const { symbol, instrumentData } = req.body;
+
+    if (!symbol) {
+      return res.status(400).json({
+        error: 'Missing symbol',
+        message: 'Please provide a symbol to explain'
+      });
+    }
+
+    // Get instrument data if not provided
+    let data = instrumentData;
+    if (!data) {
+      // Try to get from final analysis
+      try {
+        const { generateFinalAnalysis } = await import('./services/finalAnalysis.js');
+        const analysis = await generateFinalAnalysis({});
+        data = analysis.instruments?.[symbol.toUpperCase()] || {};
+      } catch (e) {
+        data = cachedData?.instruments?.[symbol.toUpperCase()] || {};
+      }
+    }
+
+    const response = await explainInstrumentBias(symbol, data, cachedData || {});
+    res.json(response);
+  } catch (error) {
+    console.error('Instrument explanation error:', error);
+    res.status(500).json({
+      error: 'Explanation failed',
+      message: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
@@ -1713,4 +1837,5 @@ app.listen(PORT, () => {
   console.log(`Earnings Calendar: http://localhost:${PORT}/api/earnings`);
   console.log(`Scanner webhook: http://localhost:${PORT}/api/scanner/webhook`);
   console.log(`Session Info: http://localhost:${PORT}/api/session/current`);
+  console.log(`Chatbot: http://localhost:${PORT}/api/chat`);
 });
