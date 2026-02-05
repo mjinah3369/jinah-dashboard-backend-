@@ -71,7 +71,9 @@ const CURRENCY_SYMBOLS = {
   '6E=F': { name: 'Euro FX', symbol: '6E' },
   '6J=F': { name: 'Japanese Yen', symbol: '6J' },
   '6B=F': { name: 'British Pound', symbol: '6B' },
-  '6A=F': { name: 'Australian Dollar', symbol: '6A' }
+  '6A=F': { name: 'Australian Dollar', symbol: '6A' },
+  '6C=F': { name: 'Canadian Dollar', symbol: '6C' },
+  '6S=F': { name: 'Swiss Franc', symbol: '6S' }
 };
 
 // International Indices Symbols
@@ -356,7 +358,9 @@ function getCurrencyFallbackData() {
     '6E': { name: 'Euro FX', basePrice: 1.0850, volatility: 0.4 },
     '6J': { name: 'Japanese Yen', basePrice: 0.0067, volatility: 0.5 },
     '6B': { name: 'British Pound', basePrice: 1.2650, volatility: 0.4 },
-    '6A': { name: 'Australian Dollar', basePrice: 0.6550, volatility: 0.5 }
+    '6A': { name: 'Australian Dollar', basePrice: 0.6550, volatility: 0.5 },
+    '6C': { name: 'Canadian Dollar', basePrice: 0.7350, volatility: 0.4 },
+    '6S': { name: 'Swiss Franc', basePrice: 1.1250, volatility: 0.4 }
   };
 
   const result = {};
