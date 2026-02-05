@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import { fetchYahooFinanceFutures, fetchCurrencyFutures, fetchInternationalIndices, fetchSectorETFs, fetchMag7Stocks, fetchTreasuryYields, fetchCryptoPrices, calculateExpectationMeters, fetchAsiaInstruments, fetchLondonInstruments, fetchUSInstruments, getGoldSilverRatio } from './services/yahooFinance.js';
 import { fetchEconomicCalendar, fetchEarningsCalendar } from './services/alphaVantage.js';
-import { fetchFredData } from './services/fred.js';
+import { fetchFredData, fetchComprehensiveEconomicData, getEconomicSummaryForAgent, analyzeEconomicSignals, getAvailableSeries, FRED_SERIES } from './services/fred.js';
 import { fetchPolygonData } from './services/polygon.js';
 import { fetchFinnhubNews, fetchMag7News } from './services/finnhubNews.js';
 import { fetchNewsApiHeadlines } from './services/newsApi.js';
@@ -408,6 +408,100 @@ app.get('/api/weather/outlook', async (req, res) => {
       message: error.message
     });
   }
+});
+
+// ============================================================================
+// ECONOMIC DATA ENDPOINTS (FRED API)
+// ============================================================================
+
+// Get comprehensive economic indicators (NFP, CPI, GDP, etc.)
+app.get('/api/economic', async (req, res) => {
+  try {
+    console.log('Fetching comprehensive economic data from FRED...');
+    const data = await fetchComprehensiveEconomicData(process.env.FRED_API_KEY);
+
+    if (data.error) {
+      return res.status(400).json({
+        error: data.error,
+        message: 'FRED API key required. Get free key at: https://fred.stlouisfed.org/docs/api/api_key.html'
+      });
+    }
+
+    res.json(data);
+  } catch (error) {
+    console.error('Economic data error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch economic data',
+      message: error.message
+    });
+  }
+});
+
+// Get specific economic indicator
+app.get('/api/economic/:indicator', async (req, res) => {
+  try {
+    const { indicator } = req.params;
+    const upperIndicator = indicator.toUpperCase();
+
+    if (!FRED_SERIES[upperIndicator]) {
+      return res.status(400).json({
+        error: 'Invalid indicator',
+        message: `Indicator ${indicator} not found`,
+        availableIndicators: Object.keys(FRED_SERIES)
+      });
+    }
+
+    const data = await fetchComprehensiveEconomicData(process.env.FRED_API_KEY);
+    const indicatorData = data.indicators?.[upperIndicator];
+
+    if (!indicatorData) {
+      return res.status(404).json({
+        error: 'Data not available',
+        message: `No data found for ${indicator}`
+      });
+    }
+
+    res.json(indicatorData);
+  } catch (error) {
+    console.error(`Economic indicator error for ${req.params.indicator}:`, error);
+    res.status(500).json({
+      error: 'Failed to fetch indicator data',
+      message: error.message
+    });
+  }
+});
+
+// Get economic signals (trading implications)
+app.get('/api/economic/signals', async (req, res) => {
+  try {
+    const data = await fetchComprehensiveEconomicData(process.env.FRED_API_KEY);
+
+    if (data.error) {
+      return res.json({ signals: [], message: 'Using default signals (API key needed for live data)' });
+    }
+
+    res.json({
+      signals: data.signals || [],
+      summary: data.summary,
+      lastUpdated: data.lastUpdated
+    });
+  } catch (error) {
+    console.error('Economic signals error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch economic signals',
+      message: error.message
+    });
+  }
+});
+
+// Get list of available economic indicators
+app.get('/api/economic-indicators', (req, res) => {
+  const indicators = getAvailableSeries();
+  res.json({
+    count: indicators.length,
+    indicators: indicators,
+    categories: [...new Set(indicators.map(i => i.category))]
+  });
 });
 
 // ============================================================================
