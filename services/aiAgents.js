@@ -12,6 +12,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { calculateAllMetrics } from './calculatedMetrics.js';
 import { formatReportsForPrompt, getEventRiskSummary } from './reportSchedule.js';
+import { fetchAllEnergyData, getEIASummaryForAgent } from './eiaApi.js';
+import { fetchAllAgricultureData, getUSDASSummaryForAgent } from './usdaApi.js';
+import { getAllCOTData, getCOTSummaryForAgent } from './cftcCot.js';
+import { getPutCallRatio, getPutCallSummaryForAgent } from './cboePutCall.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -413,7 +417,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
 /**
  * MACRO AGENT - Analyzes correlations and macro conditions
- * Enhanced with calculated metrics for quantitative signals
+ * Enhanced with calculated metrics, EIA/USDA data, COT positioning, and Put/Call ratios
  */
 async function macroAgent(macroData, priceData = null) {
   const cacheKey = `macro_${Math.floor(Date.now() / CACHE_TTL)}`;
@@ -427,6 +431,21 @@ async function macroAgent(macroData, priceData = null) {
     } catch (err) {
       console.log('Could not calculate metrics:', err.message);
     }
+  }
+
+  // Fetch fundamental data (EIA, USDA, COT, Put/Call)
+  let fundamentalData = {};
+  try {
+    const [eiaData, usdaData, cotData, putCallData] = await Promise.all([
+      fetchAllEnergyData(process.env.EIA_API_KEY).catch(() => null),
+      fetchAllAgricultureData(process.env.USDA_API_KEY).catch(() => null),
+      Promise.resolve(getAllCOTData()),
+      Promise.resolve(getPutCallRatio())
+    ]);
+
+    fundamentalData = { eiaData, usdaData, cotData, putCallData };
+  } catch (err) {
+    console.log('Could not fetch fundamental data:', err.message);
   }
 
   // Build calculated metrics section for prompt
@@ -448,6 +467,33 @@ CALCULATED METRICS (Pre-computed signals):
 `;
   }
 
+  // Build fundamental data section
+  let fundamentalSection = '';
+  if (fundamentalData.eiaData) {
+    fundamentalSection += `
+EIA ENERGY DATA (Latest Reports):
+${getEIASummaryForAgent(fundamentalData.eiaData)}
+`;
+  }
+  if (fundamentalData.usdaData) {
+    fundamentalSection += `
+USDA AGRICULTURE DATA:
+${getUSDASSummaryForAgent(fundamentalData.usdaData)}
+`;
+  }
+  if (fundamentalData.cotData) {
+    fundamentalSection += `
+CFTC COT POSITIONING (As of ${fundamentalData.cotData._summary?.dataDate || 'Tuesday'}):
+${getCOTSummaryForAgent(fundamentalData.cotData)}
+`;
+  }
+  if (fundamentalData.putCallData) {
+    fundamentalSection += `
+CBOE PUT/CALL RATIO:
+${getPutCallSummaryForAgent(fundamentalData.putCallData)}
+`;
+  }
+
   const prompt = `You are a macro analyst for futures trading. Analyze these conditions:
 
 RAW DATA:
@@ -457,10 +503,14 @@ DXY: ${macroData.dxy || 'N/A'} (${macroData.dxyChange > 0 ? '+' : ''}${macroData
 HYG: ${macroData.hyg?.price || 'N/A'} (${macroData.hyg?.changePercent || 0}%)
 TLT: ${macroData.tlt?.price || 'N/A'} (${macroData.tlt?.changePercent || 0}%)
 ${metricsSection}
+${fundamentalSection}
 SECTORS:
 ${Object.entries(macroData.sectors || {}).map(([k, v]) => `${k}: ${v.changePercent || 0}%`).join('\n')}
 
-IMPORTANT: Use the CALCULATED METRICS above as your primary signals. These are pre-computed interpretations based on quantitative thresholds. Your analysis should align with and explain these signals.
+IMPORTANT: Use the CALCULATED METRICS and FUNDAMENTAL DATA above as your primary signals. These are pre-computed interpretations based on quantitative thresholds. Pay special attention to:
+- EIA data for CL/NG direction (draws = bullish, builds = bearish)
+- COT positioning extremes (crowded long = contrarian bearish, crowded short = contrarian bullish)
+- Put/Call ratio for sentiment (high = contrarian bullish, low = contrarian bearish)
 
 Respond in JSON format ONLY (no markdown, no explanation):
 {
@@ -470,6 +520,8 @@ Respond in JSON format ONLY (no markdown, no explanation):
   "dollarImpact": {"direction": "up/down/neutral", "affectedSymbols": []},
   "sectorRotation": {"leading": [], "lagging": [], "signal": ""},
   "yieldSignals": {"realYield": "", "carryTrade": ""},
+  "energySignals": {"crude": "", "natgas": ""},
+  "positioningSignals": {"cotExtreme": "", "putCallSignal": ""},
   "correlationAlerts": [],
   "overallBias": "bullish/bearish/neutral"
 }`;
@@ -485,14 +537,15 @@ Respond in JSON format ONLY (no markdown, no explanation):
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     const result = jsonMatch ? JSON.parse(jsonMatch[0]) : { error: 'Failed to parse response' };
 
-    // Attach the calculated metrics to the result
+    // Attach the calculated metrics and fundamental data to the result
     result.calculatedMetrics = calculatedMetrics;
+    result.fundamentalData = fundamentalData;
 
     agentCache.set(cacheKey, result);
     return result;
   } catch (error) {
     console.error('Macro agent error:', error.message);
-    return { error: true, message: error.message, calculatedMetrics };
+    return { error: true, message: error.message, calculatedMetrics, fundamentalData };
   }
 }
 
