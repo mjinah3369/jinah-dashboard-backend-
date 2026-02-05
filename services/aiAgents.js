@@ -19,28 +19,328 @@ const anthropic = new Anthropic({
 const agentCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
+// ============================================================================
+// NEWS KEYWORD DICTIONARY - Maps keywords to affected instruments
+// From INSTRUMENT_DRIVERS_REFERENCE.md
+// ============================================================================
+
+const NEWS_KEYWORD_MAP = {
+
+  // === US INDICES ===
+  ES_NQ_YM_RTY: [
+    'Fed', 'FOMC', 'Powell', 'rate cut', 'rate hike', 'interest rate',
+    'CPI', 'inflation', 'PCE', 'NFP', 'payroll', 'jobs report',
+    'GDP', 'recession', 'ISM', 'manufacturing PMI', 'services PMI',
+    'consumer confidence', 'retail sales', 'unemployment'
+  ],
+  NQ_SPECIFIC: [
+    'NVDA', 'Nvidia', 'AAPL', 'Apple', 'MSFT', 'Microsoft',
+    'GOOGL', 'Google', 'Alphabet', 'META', 'Facebook',
+    'AMZN', 'Amazon', 'TSLA', 'Tesla',
+    'semiconductor', 'AI chip', 'artificial intelligence',
+    'antitrust', 'tech regulation', 'cloud spending',
+    'SOX', 'chip stocks', 'Magnificent Seven', 'Mag7'
+  ],
+  YM_SPECIFIC: [
+    'UnitedHealth', 'UNH', 'Goldman Sachs', 'JPMorgan',
+    'Boeing', 'Caterpillar', 'Dow Jones',
+    'infrastructure bill', 'defense spending',
+    'dividend', 'blue chip', 'industrial production',
+    'durable goods', 'trade tariff'
+  ],
+  RTY_SPECIFIC: [
+    'small cap', 'Russell 2000', 'IWM',
+    'regional bank', 'KRE', 'community bank',
+    'small business', 'NFIB', 'credit tightening',
+    'junk bond', 'high yield', 'IPO', 'M&A',
+    'biotech', 'FDA approval', 'PDUFA'
+  ],
+
+  // === METALS ===
+  GC_GOLD: [
+    'gold', 'bullion', 'gold reserve', 'GLD',
+    'PBOC gold', 'central bank buying',
+    'safe haven', 'real yield', 'COMEX gold',
+    'London fix', 'India gold', 'China gold',
+    'gold mine', 'Newmont', 'Barrick'
+  ],
+  SI_SILVER: [
+    'silver', 'SLV', 'silver mine',
+    'solar panel', 'photovoltaic',
+    'gold silver ratio', 'industrial metal',
+    'COMEX silver'
+  ],
+  HG_COPPER: [
+    'copper', 'Dr. Copper', 'LME copper',
+    'copper mine', 'Chile copper', 'Peru copper',
+    'Freeport', 'copper inventory',
+    'EV copper', 'electric vehicle copper',
+    'data center copper', 'power grid'
+  ],
+
+  // === ENERGY ===
+  CL_CRUDE: [
+    'crude oil', 'WTI', 'Brent', 'OPEC',
+    'oil inventory', 'EIA petroleum', 'API inventory',
+    'Baker Hughes', 'rig count', 'oil production',
+    'SPR', 'strategic petroleum', 'refinery',
+    'Iran', 'Saudi', 'OPEC+', 'production cut',
+    'Houthi', 'Red Sea', 'Strait of Hormuz',
+    'oil tanker', 'pipeline', 'Cushing'
+  ],
+  NG_NATGAS: [
+    'natural gas', 'Henry Hub', 'LNG',
+    'EIA storage', 'gas storage', 'gas injection',
+    'polar vortex', 'heating degree', 'cooling degree',
+    'Freeport LNG', 'gas pipeline', 'gas production',
+    'TTF', 'European gas'
+  ],
+  RB_GASOLINE: [
+    'gasoline', 'RBOB', 'gas prices',
+    'crack spread', 'refinery utilization',
+    'driving season', 'summer blend',
+    'ethanol', 'RIN credit', 'fuel demand'
+  ],
+
+  // === AGRICULTURE ===
+  ZC_CORN: [
+    'corn', 'USDA corn', 'ethanol', 'corn belt',
+    'Iowa', 'Illinois', 'planting', 'corn harvest',
+    'WASDE corn', 'corn export', 'feed grain',
+    'crop condition', 'corn drought'
+  ],
+  ZS_SOYBEANS: [
+    'soybean', 'USDA soy', 'soy crush',
+    'China soybean', 'Brazil soybean', 'Argentina soy',
+    'soy export', 'WASDE soy', 'bean harvest'
+  ],
+  ZW_WHEAT: [
+    'wheat', 'Black Sea grain', 'Russia wheat',
+    'Ukraine grain', 'wheat export', 'WASDE wheat',
+    'India wheat ban', 'Kansas wheat',
+    'spring wheat', 'winter wheat'
+  ],
+  ZM_SOYMEAL: [
+    'soybean meal', 'NOPA crush', 'feed demand',
+    'livestock feed', 'meal export', 'Argentina meal'
+  ],
+  ZL_SOYOIL: [
+    'soybean oil', 'renewable diesel', 'biodiesel',
+    'RIN', 'EPA renewable', 'palm oil',
+    'canola', 'rapeseed', 'cooking oil'
+  ],
+  LE_CATTLE: [
+    'cattle', 'beef', 'cattle on feed',
+    'beef cutout', 'packer margin', 'cattle herd',
+    'beef export', 'drought pasture', 'feeder cattle'
+  ],
+  HE_HOGS: [
+    'lean hog', 'pork', 'hogs and pigs',
+    'pork cutout', 'hog slaughter', 'African swine fever',
+    'ASF', 'pork export', 'China pork'
+  ],
+
+  // === CURRENCIES ===
+  DX_DOLLAR: [
+    'dollar index', 'DXY', 'US dollar',
+    'dollar strength', 'greenback',
+    'reserve currency', 'de-dollarization'
+  ],
+  E6_EURO: [
+    'ECB', 'Lagarde', 'euro', 'eurozone',
+    'German economy', 'IFO', 'ZEW',
+    'EU PMI', 'European growth', 'Italian debt',
+    'French election', 'EU fiscal'
+  ],
+  J6_YEN: [
+    'BOJ', 'Bank of Japan', 'yen', 'Ueda',
+    'yield curve control', 'YCC', 'Japan intervention',
+    'MOF intervention', 'carry trade', 'yen unwind',
+    'Japan CPI', 'Tokyo CPI', 'Nikkei'
+  ],
+  B6_POUND: [
+    'BOE', 'Bank of England', 'pound', 'sterling',
+    'UK CPI', 'UK GDP', 'UK employment', 'UK wages',
+    'gilt', 'UK housing', 'UK PMI'
+  ],
+  A6_AUD: [
+    'RBA', 'Australian dollar', 'Aussie',
+    'iron ore', 'Australia employment',
+    'Australia CPI', 'China stimulus'
+  ],
+  C6_CAD: [
+    'Bank of Canada', 'BOC', 'Canadian dollar', 'loonie',
+    'Canada jobs', 'Canada employment',
+    'USMCA', 'Canada housing', 'Canadian oil'
+  ],
+  S6_CHF: [
+    'SNB', 'Swiss National Bank', 'Swiss franc',
+    'Switzerland', 'SNB intervention',
+    'Swiss CPI', 'safe haven franc'
+  ],
+
+  // === CRYPTO ===
+  BTC_BITCOIN: [
+    'Bitcoin', 'BTC', 'IBIT', 'FBTC',
+    'Bitcoin ETF', 'spot ETF', 'crypto regulation',
+    'SEC crypto', 'MicroStrategy', 'MSTR', 'Saylor',
+    'halving', 'mining hash rate', 'Coinbase',
+    'Bitcoin reserve', 'crypto executive order'
+  ],
+  ETH_ETHEREUM: [
+    'Ethereum', 'ETH', 'Ether',
+    'ETH ETF', 'DeFi', 'smart contract',
+    'layer 2', 'Arbitrum', 'staking',
+    'gas fee', 'Vitalik', 'NFT'
+  ],
+
+  // === INTERNATIONAL ===
+  DAX_GERMAN: [
+    'DAX', 'German', 'Germany', 'Bundesbank',
+    'VW', 'BMW', 'Siemens', 'SAP',
+    'German PMI', 'German industry', 'Scholz',
+    'German auto', 'EU tariff'
+  ],
+  FTSE_UK: [
+    'FTSE', 'London Stock Exchange', 'UK market',
+    'BP', 'Shell', 'Rio Tinto', 'Glencore',
+    'AstraZeneca', 'HSBC', 'UK economy'
+  ],
+  STOXX_EU: [
+    'Euro Stoxx', 'European stocks', 'EU market',
+    'ASML', 'LVMH', 'TotalEnergies',
+    'European bank', 'Eurozone', 'EU growth'
+  ]
+};
+
+// Map keyword groups to actual trading symbols
+const KEYWORD_GROUP_TO_SYMBOLS = {
+  ES_NQ_YM_RTY: ['ES', 'NQ', 'YM', 'RTY'],
+  NQ_SPECIFIC: ['NQ'],
+  YM_SPECIFIC: ['YM'],
+  RTY_SPECIFIC: ['RTY'],
+  GC_GOLD: ['GC'],
+  SI_SILVER: ['SI'],
+  HG_COPPER: ['HG'],
+  CL_CRUDE: ['CL'],
+  NG_NATGAS: ['NG'],
+  RB_GASOLINE: ['RB'],
+  ZC_CORN: ['ZC'],
+  ZS_SOYBEANS: ['ZS'],
+  ZW_WHEAT: ['ZW'],
+  ZM_SOYMEAL: ['ZM'],
+  ZL_SOYOIL: ['ZL'],
+  LE_CATTLE: ['LE'],
+  HE_HOGS: ['HE'],
+  DX_DOLLAR: ['DX'],
+  E6_EURO: ['6E'],
+  J6_YEN: ['6J'],
+  B6_POUND: ['6B'],
+  A6_AUD: ['6A'],
+  C6_CAD: ['6C'],
+  S6_CHF: ['6S'],
+  BTC_BITCOIN: ['BTC'],
+  ETH_ETHEREUM: ['ETH'],
+  DAX_GERMAN: ['DAX'],
+  FTSE_UK: ['FTSE'],
+  STOXX_EU: ['STOXX']
+};
+
+/**
+ * Tag a headline with affected symbols based on keyword matching
+ * @param {string} headline - The news headline text
+ * @returns {string[]} - Array of affected symbol names
+ */
+function tagHeadlineWithSymbols(headline) {
+  if (!headline) return [];
+
+  const headlineLower = headline.toLowerCase();
+  const affectedSymbols = new Set();
+
+  for (const [group, keywords] of Object.entries(NEWS_KEYWORD_MAP)) {
+    for (const keyword of keywords) {
+      if (headlineLower.includes(keyword.toLowerCase())) {
+        const symbols = KEYWORD_GROUP_TO_SYMBOLS[group] || [];
+        symbols.forEach(s => affectedSymbols.add(s));
+        break; // Found a match in this group, move to next group
+      }
+    }
+  }
+
+  return Array.from(affectedSymbols);
+}
+
+/**
+ * Pre-process news data to add instrument tags
+ * @param {Array} newsData - Raw news headlines
+ * @returns {Array} - News with affectedSymbols added
+ */
+function preprocessNewsWithTags(newsData) {
+  if (!newsData || !Array.isArray(newsData)) return [];
+
+  return newsData.map(item => {
+    const headline = item.headline || item.title || '';
+    const autoTaggedSymbols = tagHeadlineWithSymbols(headline);
+
+    return {
+      ...item,
+      autoTaggedSymbols,
+      tagCount: autoTaggedSymbols.length
+    };
+  });
+}
+
 /**
  * NEWS AGENT - Analyzes headlines and news flow
+ * Enhanced with keyword-based instrument tagging
  */
 async function newsAgent(newsData, session) {
   const cacheKey = `news_${session}_${Math.floor(Date.now() / CACHE_TTL)}`;
   if (agentCache.has(cacheKey)) return agentCache.get(cacheKey);
 
   if (!newsData || newsData.length === 0) {
-    return { topStories: [], overallSentiment: 'neutral', urgentAlerts: [], keyThemes: [] };
+    return { topStories: [], overallSentiment: 'neutral', urgentAlerts: [], keyThemes: [], taggedNews: [] };
   }
+
+  // Pre-process news with instrument tags
+  const taggedNews = preprocessNewsWithTags(newsData);
+
+  // Format headlines with their auto-detected symbols
+  const formattedHeadlines = taggedNews.slice(0, 15).map(n => {
+    const headline = n.headline || n.title;
+    const symbols = n.autoTaggedSymbols?.length > 0 ? ` [${n.autoTaggedSymbols.join(', ')}]` : '';
+    return `- ${headline}${symbols} (${n.source || 'Unknown'})`;
+  }).join('\n');
+
+  // Count which symbols are most mentioned
+  const symbolCounts = {};
+  taggedNews.forEach(n => {
+    (n.autoTaggedSymbols || []).forEach(s => {
+      symbolCounts[s] = (symbolCounts[s] || 0) + 1;
+    });
+  });
+  const topMentionedSymbols = Object.entries(symbolCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([symbol, count]) => `${symbol}(${count})`)
+    .join(', ');
 
   const prompt = `You are a futures trading news analyst. Analyze these headlines for the ${session} session.
 
-HEADLINES:
-${newsData.slice(0, 15).map(n => `- ${n.headline || n.title} (${n.source || 'Unknown'})`).join('\n')}
+HEADLINES (with auto-detected affected instruments in brackets):
+${formattedHeadlines}
+
+MOST MENTIONED SYMBOLS: ${topMentionedSymbols || 'None detected'}
+
+IMPORTANT: Use the auto-detected symbols in brackets as a guide. Each headline has been pre-tagged with the futures instruments it affects based on keyword analysis.
 
 Respond in JSON format ONLY (no markdown, no explanation):
 {
   "topStories": [{"headline": "", "impact": "HIGH/MEDIUM/LOW", "affectedSymbols": [], "bias": "bullish/bearish/neutral"}],
   "overallSentiment": "risk-on/risk-off/mixed",
   "urgentAlerts": [],
-  "keyThemes": []
+  "keyThemes": [],
+  "hotSymbols": []
 }`;
 
   try {
@@ -55,11 +355,15 @@ Respond in JSON format ONLY (no markdown, no explanation):
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     const result = jsonMatch ? JSON.parse(jsonMatch[0]) : { error: 'Failed to parse response' };
 
+    // Add the pre-tagged news and symbol counts to the result
+    result.taggedNews = taggedNews.slice(0, 15);
+    result.symbolMentions = symbolCounts;
+
     agentCache.set(cacheKey, result);
     return result;
   } catch (error) {
     console.error('News agent error:', error.message);
-    return { error: true, message: error.message, topStories: [], overallSentiment: 'unknown' };
+    return { error: true, message: error.message, topStories: [], overallSentiment: 'unknown', taggedNews: [] };
   }
 }
 
@@ -305,5 +609,10 @@ export {
   runFullAnalysis,
   getQuickSessionBrief,
   clearCache,
-  getCacheStatus
+  getCacheStatus,
+  // Keyword tagging utilities
+  tagHeadlineWithSymbols,
+  preprocessNewsWithTags,
+  NEWS_KEYWORD_MAP,
+  KEYWORD_GROUP_TO_SYMBOLS
 };
