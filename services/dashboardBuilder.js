@@ -644,7 +644,7 @@ function generateZNReasons(data, bias, fredConditions, newsSentiment = {}) {
 // Currency instruments builder
 function buildCurrencyInstruments(currencyData) {
   const currencies = {};
-  const currencyOrder = ['DX', '6E', '6J', '6B', '6A'];
+  const currencyOrder = ['DX', '6E', '6J', '6B', '6A', '6C', '6S'];
 
   currencyOrder.forEach(symbol => {
     const data = currencyData[symbol];
@@ -701,6 +701,16 @@ function generateCurrencyReasons(symbol, data) {
       if (data.changePercent > 0.3) reasons.push('Aussie strength - risk-on signal');
       if (data.changePercent < -0.3) reasons.push('Aussie weakness - China concerns');
       reasons.push('Commodity currency tracking risk sentiment');
+      break;
+    case '6C':
+      if (data.changePercent > 0.3) reasons.push('CAD strength - oil supportive');
+      if (data.changePercent < -0.3) reasons.push('CAD weakness - oil/risk concerns');
+      reasons.push('Oil prices key driver for loonie');
+      break;
+    case '6S':
+      if (data.changePercent > 0.3) reasons.push('Franc strength - safe haven bid');
+      if (data.changePercent < -0.3) reasons.push('Franc weakness - risk appetite rising');
+      reasons.push('SNB policy and safe haven flows in focus');
       break;
     default:
       reasons.push('Currency market conditions');
