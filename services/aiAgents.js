@@ -10,6 +10,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { calculateAllMetrics } from './calculatedMetrics.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -411,28 +412,63 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
 /**
  * MACRO AGENT - Analyzes correlations and macro conditions
+ * Enhanced with calculated metrics for quantitative signals
  */
-async function macroAgent(macroData) {
+async function macroAgent(macroData, priceData = null) {
   const cacheKey = `macro_${Math.floor(Date.now() / CACHE_TTL)}`;
   if (agentCache.has(cacheKey)) return agentCache.get(cacheKey);
 
+  // Calculate derived metrics if price data is available
+  let calculatedMetrics = null;
+  if (priceData) {
+    try {
+      calculatedMetrics = calculateAllMetrics(priceData);
+    } catch (err) {
+      console.log('Could not calculate metrics:', err.message);
+    }
+  }
+
+  // Build calculated metrics section for prompt
+  let metricsSection = '';
+  if (calculatedMetrics) {
+    metricsSection = `
+CALCULATED METRICS (Pre-computed signals):
+- NQ-RTY Spread: ${calculatedMetrics.rotation?.nqRtySpread?.value || 'N/A'} → ${calculatedMetrics.rotation?.nqRtySpread?.interpretation || 'N/A'}
+- Growth/Value (XLK-XLF): ${calculatedMetrics.rotation?.growthValue?.value || 'N/A'} → ${calculatedMetrics.rotation?.growthValue?.interpretation || 'N/A'}
+- Gold/Silver Ratio: ${calculatedMetrics.riskSentiment?.goldSilverRatio?.value || 'N/A'} → ${calculatedMetrics.riskSentiment?.goldSilverRatio?.interpretation || 'N/A'}
+- VIX Level: ${calculatedMetrics.riskSentiment?.vix?.value || 'N/A'} → ${calculatedMetrics.riskSentiment?.vix?.interpretation || 'N/A'}
+- HYG Risk Signal: ${calculatedMetrics.riskSentiment?.hygSignal?.interpretation || 'N/A'}
+- Crack Spread (RB-CL): ${calculatedMetrics.energy?.crackSpread?.value || 'N/A'} → ${calculatedMetrics.energy?.crackSpread?.interpretation || 'N/A'}
+- Real Yield (10Y-CPI): ${calculatedMetrics.yields?.realYield?.value || 'N/A'} → ${calculatedMetrics.yields?.realYield?.interpretation || 'N/A'}
+- Carry Trade Spread: ${calculatedMetrics.yields?.carryTrade?.value || 'N/A'} → ${calculatedMetrics.yields?.carryTrade?.interpretation || 'N/A'}
+- Dollar Impact: ${calculatedMetrics.currency?.dollarImpact?.interpretation || 'N/A'}
+- BTC-NQ Correlation: ${calculatedMetrics.crypto?.btcNqCorrelation?.interpretation || 'N/A'}
+- OVERALL RISK TONE: ${calculatedMetrics.overallRiskTone?.tone || 'N/A'} (${calculatedMetrics.overallRiskTone?.confidence || 'N/A'} confidence)
+`;
+  }
+
   const prompt = `You are a macro analyst for futures trading. Analyze these conditions:
 
+RAW DATA:
 VIX: ${macroData.vix || 'N/A'} (${macroData.vixChange > 0 ? '+' : ''}${macroData.vixChange || 0}%)
 DXY: ${macroData.dxy || 'N/A'} (${macroData.dxyChange > 0 ? '+' : ''}${macroData.dxyChange || 0}%)
 10Y Yield: ${macroData.yield10y || 'N/A'}
-HYG: ${macroData.hyg?.price || 'N/A'} (${macroData.hyg?.changePercent || 0}%) - ${macroData.hyg?.interpretation || 'N/A'}
+HYG: ${macroData.hyg?.price || 'N/A'} (${macroData.hyg?.changePercent || 0}%)
 TLT: ${macroData.tlt?.price || 'N/A'} (${macroData.tlt?.changePercent || 0}%)
-
+${metricsSection}
 SECTORS:
 ${Object.entries(macroData.sectors || {}).map(([k, v]) => `${k}: ${v.changePercent || 0}%`).join('\n')}
+
+IMPORTANT: Use the CALCULATED METRICS above as your primary signals. These are pre-computed interpretations based on quantitative thresholds. Your analysis should align with and explain these signals.
 
 Respond in JSON format ONLY (no markdown, no explanation):
 {
   "riskEnvironment": "risk-on/risk-off/neutral",
+  "riskConfidence": "high/medium/low",
   "vixInterpretation": "",
   "dollarImpact": {"direction": "up/down/neutral", "affectedSymbols": []},
-  "sectorRotation": {"leading": [], "lagging": []},
+  "sectorRotation": {"leading": [], "lagging": [], "signal": ""},
+  "yieldSignals": {"realYield": "", "carryTrade": ""},
   "correlationAlerts": [],
   "overallBias": "bullish/bearish/neutral"
 }`;
@@ -448,11 +484,14 @@ Respond in JSON format ONLY (no markdown, no explanation):
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     const result = jsonMatch ? JSON.parse(jsonMatch[0]) : { error: 'Failed to parse response' };
 
+    // Attach the calculated metrics to the result
+    result.calculatedMetrics = calculatedMetrics;
+
     agentCache.set(cacheKey, result);
     return result;
   } catch (error) {
     console.error('Macro agent error:', error.message);
-    return { error: true, message: error.message };
+    return { error: true, message: error.message, calculatedMetrics };
   }
 }
 
@@ -506,15 +545,16 @@ Provide a unified trading brief. Respond in JSON format ONLY (no markdown, no ex
  * Run full analysis pipeline
  */
 async function runFullAnalysis(data) {
-  const { news, levels, sweeps, macro, session } = data;
+  const { news, levels, sweeps, macro, session, priceData } = data;
 
   console.log('Running AI analysis pipeline...');
 
   // Run sub-agents in parallel
+  // Pass priceData to macroAgent for calculated metrics
   const [newsResult, levelsResult, macroResult] = await Promise.all([
     newsAgent(news || [], session.current?.name || 'Unknown'),
     levelsAgent(levels || {}, sweeps || [], session.current?.name || 'Unknown'),
-    macroAgent(macro || {})
+    macroAgent(macro || {}, priceData || null)
   ]);
 
   console.log('Sub-agents complete, running orchestrator...');
@@ -614,5 +654,7 @@ export {
   tagHeadlineWithSymbols,
   preprocessNewsWithTags,
   NEWS_KEYWORD_MAP,
-  KEYWORD_GROUP_TO_SYMBOLS
+  KEYWORD_GROUP_TO_SYMBOLS,
+  // Re-export calculated metrics
+  calculateAllMetrics
 };
