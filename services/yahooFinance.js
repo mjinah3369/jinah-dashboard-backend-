@@ -95,6 +95,22 @@ const SECTOR_SYMBOLS = {
   'XLU': { name: 'Utilities', symbol: 'XLU' }
 };
 
+// === ADDITIONAL SYMBOLS FROM INSTRUMENT_DRIVERS_REFERENCE.md ===
+
+// Market Breadth & Rotation Indicators
+const BREADTH_SYMBOLS = {
+  '^SOX': { name: 'Philadelphia Semiconductor', symbol: 'SOX', description: 'NQ leading indicator - chip stocks' },
+  'KRE': { name: 'Regional Banks ETF', symbol: 'KRE', description: 'RTY proxy - small cap bank health' },
+  'QQQ': { name: 'Nasdaq 100 ETF', symbol: 'QQQ', description: 'Tech ETF - volume ratio indicator' },
+  'IWM': { name: 'Russell 2000 ETF', symbol: 'IWM', description: 'Small cap ETF - rotation indicator' }
+};
+
+// Commodity Proxy Stocks
+const COMMODITY_PROXY_SYMBOLS = {
+  'BHP': { name: 'BHP Group', symbol: 'BHP', description: 'Iron ore proxy for 6A (AUD)' },
+  'ASML': { name: 'ASML Holding', symbol: 'ASML', description: 'Largest STOXX weight - AI/chip proxy for Europe' }
+};
+
 // === SESSION-SPECIFIC SYMBOLS (Phase 2) ===
 
 // Asia Session Additions
@@ -1468,5 +1484,161 @@ export function getGoldSilverRatio(goldPrice, silverPrice) {
     interpretation,
     description: ratio > 70 ? 'Silver undervalued vs Gold (risk-off)' :
                  ratio < 60 ? 'Silver outperforming (risk-on)' : 'Normal range'
+  };
+}
+
+// ============================================================================
+// BREADTH & ROTATION INDICATORS (From INSTRUMENT_DRIVERS_REFERENCE.md)
+// ============================================================================
+
+/**
+ * Fetch breadth indicators: SOX, KRE, QQQ, IWM
+ * Used for rotation signals and calculated metrics
+ */
+export async function fetchBreadthIndicators() {
+  const allSymbols = { ...BREADTH_SYMBOLS, ...COMMODITY_PROXY_SYMBOLS };
+  const symbols = Object.keys(allSymbols);
+  const results = {};
+
+  const fetchPromises = symbols.map(async (yahooSymbol) => {
+    const config = allSymbols[yahooSymbol];
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=5d`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const meta = data.chart?.result?.[0]?.meta;
+      const quotes = data.chart?.result?.[0]?.indicators?.quote?.[0];
+
+      if (!meta || !meta.regularMarketPrice) return null;
+
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || price;
+      const change = price - prevClose;
+      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+
+      // Calculate volume ratio (today vs 5-day average)
+      let volumeRatio = 1;
+      if (quotes?.volume && quotes.volume.length >= 5) {
+        const volumes = quotes.volume.filter(v => v && v > 0);
+        if (volumes.length >= 2) {
+          const todayVolume = volumes[volumes.length - 1];
+          const avgVolume = volumes.slice(0, -1).reduce((a, b) => a + b, 0) / (volumes.length - 1);
+          volumeRatio = avgVolume > 0 ? todayVolume / avgVolume : 1;
+        }
+      }
+
+      return {
+        symbol: config.symbol,
+        data: {
+          name: config.name,
+          description: config.description,
+          price: parseFloat(price.toFixed(2)),
+          change: parseFloat(change.toFixed(2)),
+          changePercent: parseFloat(changePercent.toFixed(2)),
+          previousClose: parseFloat(prevClose.toFixed(2)),
+          volume: meta.regularMarketVolume || 0,
+          volumeRatio: parseFloat(volumeRatio.toFixed(2)),
+          volumeSignal: volumeRatio > 1.5 ? 'HIGH' : volumeRatio < 0.7 ? 'LOW' : 'NORMAL'
+        }
+      };
+    } catch (error) {
+      console.error(`Failed to fetch breadth indicator ${yahooSymbol}:`, error.message);
+      return null;
+    }
+  });
+
+  const fetchResults = await Promise.allSettled(fetchPromises);
+  fetchResults.forEach((res) => {
+    if (res.status === 'fulfilled' && res.value) {
+      results[res.value.symbol] = res.value.data;
+    }
+  });
+
+  // Add fallback for missing
+  const fallback = getBreadthFallbackData();
+  Object.keys(fallback).forEach(symbol => {
+    if (!results[symbol]) {
+      results[symbol] = fallback[symbol];
+    }
+  });
+
+  // Calculate rotation signals
+  if (results.QQQ && results.IWM) {
+    results.rotationSignal = {
+      qqq_iwm_spread: parseFloat((results.QQQ.changePercent - results.IWM.changePercent).toFixed(2)),
+      interpretation: results.IWM.changePercent > results.QQQ.changePercent + 0.5 ?
+        'BREADTH_EXPANDING — Small caps leading, healthy risk-on' :
+        results.QQQ.changePercent > results.IWM.changePercent + 0.5 ?
+        'NARROW_RALLY — Tech leading, breadth weak' : 'BALANCED'
+    };
+  }
+
+  // SOX vs NQ signal
+  if (results.SOX) {
+    results.soxSignal = {
+      changePercent: results.SOX.changePercent,
+      interpretation: results.SOX.changePercent > 1 ? 'CHIP_STRENGTH — Bullish NQ signal' :
+                      results.SOX.changePercent < -1 ? 'CHIP_WEAKNESS — Bearish NQ signal' : 'NEUTRAL'
+    };
+  }
+
+  // KRE signal (regional bank health)
+  if (results.KRE) {
+    results.kreSignal = {
+      changePercent: results.KRE.changePercent,
+      interpretation: results.KRE.changePercent > 0.5 ? 'REGIONAL_BANK_STRENGTH — Bullish RTY' :
+                      results.KRE.changePercent < -0.5 ? 'REGIONAL_BANK_STRESS — Watch credit' : 'NEUTRAL'
+    };
+  }
+
+  console.log(`Breadth Indicators: fetched ${Object.keys(results).length} symbols`);
+  return results;
+}
+
+function getBreadthFallbackData() {
+  return {
+    SOX: { name: 'Philadelphia Semiconductor', description: 'NQ leading indicator', price: 4850, changePercent: 0.5, volumeRatio: 1.0, volumeSignal: 'NORMAL', isFallback: true },
+    KRE: { name: 'Regional Banks ETF', description: 'RTY proxy', price: 52, changePercent: -0.3, volumeRatio: 1.0, volumeSignal: 'NORMAL', isFallback: true },
+    QQQ: { name: 'Nasdaq 100 ETF', description: 'Tech ETF', price: 520, changePercent: 0.4, volumeRatio: 1.0, volumeSignal: 'NORMAL', isFallback: true },
+    IWM: { name: 'Russell 2000 ETF', description: 'Small cap ETF', price: 228, changePercent: 0.2, volumeRatio: 1.0, volumeSignal: 'NORMAL', isFallback: true },
+    BHP: { name: 'BHP Group', description: 'Iron ore proxy for 6A', price: 58, changePercent: 0.1, volumeRatio: 1.0, volumeSignal: 'NORMAL', isFallback: true },
+    ASML: { name: 'ASML Holding', description: 'AI/chip proxy for Europe', price: 720, changePercent: 0.6, volumeRatio: 1.0, volumeSignal: 'NORMAL', isFallback: true }
+  };
+}
+
+/**
+ * Fetch all data needed for calculated metrics
+ * Combines futures, currencies, breadth, and risk indicators
+ */
+export async function fetchAllPriceData() {
+  const [futures, currencies, breadth, sectors, treasuries] = await Promise.all([
+    fetchYahooFinanceFutures(),
+    fetchCurrencyFutures(),
+    fetchBreadthIndicators(),
+    fetchSectorETFs(),
+    fetchTreasuryYields()
+  ]);
+
+  return {
+    // Spread all data into a flat object for easy metric calculation
+    ...futures,
+    ...currencies,
+    ...breadth,
+    ...sectors,
+    // Add treasury yields with TNX key for compatibility
+    TNX: treasuries['10Y'] ? { price: treasuries['10Y'].yield, changePercent: treasuries['10Y'].changePercent } : null,
+    treasuries,
+    // Metadata
+    _meta: {
+      timestamp: new Date().toISOString(),
+      sources: ['futures', 'currencies', 'breadth', 'sectors', 'treasuries']
+    }
   };
 }
