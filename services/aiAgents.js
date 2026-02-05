@@ -22,6 +22,7 @@ import {
   fetchCentralBankCalendar,
   buildReportsCalendar
 } from './fundamentalReports.js';
+import { fetchComprehensiveEconomicData, getEconomicSummaryForAgent, analyzeEconomicSignals } from './fred.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -519,17 +520,18 @@ async function macroAgent(macroData, priceData = null) {
     }
   }
 
-  // Fetch fundamental data (EIA, USDA, COT, Put/Call)
+  // Fetch fundamental data (EIA, USDA, COT, Put/Call, Economic Indicators)
   let fundamentalData = {};
   try {
-    const [eiaData, usdaData, cotData, putCallData] = await Promise.all([
+    const [eiaData, usdaData, cotData, putCallData, economicData] = await Promise.all([
       fetchAllEnergyData(process.env.EIA_API_KEY).catch(() => null),
       fetchAllAgricultureData(process.env.USDA_API_KEY).catch(() => null),
       Promise.resolve(getAllCOTData()),
-      Promise.resolve(getPutCallRatio())
+      Promise.resolve(getPutCallRatio()),
+      fetchComprehensiveEconomicData(process.env.FRED_API_KEY).catch(() => null)
     ]);
 
-    fundamentalData = { eiaData, usdaData, cotData, putCallData };
+    fundamentalData = { eiaData, usdaData, cotData, putCallData, economicData };
   } catch (err) {
     console.log('Could not fetch fundamental data:', err.message);
   }
@@ -587,6 +589,21 @@ ${getCOTSummaryForAgent(fundamentalData.cotData)}
 CBOE PUT/CALL RATIO:
 ${getPutCallSummaryForAgent(fundamentalData.putCallData)}
 `;
+  }
+
+  // Add FRED economic indicators (NFP, CPI, GDP, etc.)
+  if (fundamentalData.economicData && fundamentalData.economicData.indicators) {
+    fundamentalSection += `
+ECONOMIC INDICATORS (FRED - Live Data):
+${fundamentalData.economicData.summary || 'Economic data loading...'}
+`;
+    // Add economic signals if any
+    if (fundamentalData.economicData.signals && fundamentalData.economicData.signals.length > 0) {
+      fundamentalSection += `
+ECONOMIC SIGNALS:
+${fundamentalData.economicData.signals.map(s => `- ${s.indicator}: ${s.signal} [${s.severity}] - ${s.message}`).join('\n')}
+`;
+    }
   }
 
   // Add reports calendar with scenarios
