@@ -7,8 +7,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { analyzeAllSourcesNews, getNewsSentimentSummary } from './newsAnalysis.js';
 import { fetchEarningsCalendar, fetchEconomicCalendar } from './alphaVantage.js';
-import { fetchEnergyReports, fetchCentralBankCalendar, buildReportsCalendar } from './fundamentalReports.js';
+import { fetchEnergyReports, fetchCentralBankCalendar, fetchAgricultureReports, buildReportsCalendar } from './fundamentalReports.js';
 import { analyzeTechnicals, YAHOO_SYMBOLS } from './technicalAnalysis.js';
+import { fetchAllEnergyData, getEIASummaryForAgent } from './eiaApi.js';
+import { getAllCOTData, getCOTSummaryForAgent } from './cftcCot.js';
+import { getPutCallRatio, getPutCallSummaryForAgent } from './cboePutCall.js';
 
 // Initialize Anthropic client
 let anthropic = null;
@@ -1411,6 +1414,58 @@ export async function generateDailyBrief(marketData, newsSentiment, instruments)
   const leadingSector = sectors[0];
   const laggingSector = sectors[sectors.length - 1];
 
+  // === NEW: Fetch fundamental data for enhanced brief ===
+  let fundamentalContext = '';
+  let todaysReports = [];
+  let eventRiskLevel = 'LOW';
+
+  try {
+    // Get today's reports with scenarios
+    const energyReports = fetchEnergyReports();
+    const agReports = fetchAgricultureReports();
+    const centralBankReports = fetchCentralBankCalendar();
+    const allReports = [...energyReports, ...agReports, ...centralBankReports];
+    todaysReports = allReports.filter(r => r.isToday);
+
+    if (todaysReports.length > 0) {
+      eventRiskLevel = todaysReports.some(r => r.importance === 'HIGH') ? 'HIGH' : 'MEDIUM';
+      fundamentalContext += `\nTODAY'S SCHEDULED REPORTS (Event Risk: ${eventRiskLevel}):\n`;
+      todaysReports.forEach(r => {
+        fundamentalContext += `- ${r.shortName} at ${r.time} [${r.importance}] → Affects: ${r.affectedInstruments.join(', ')}\n`;
+        if (r.scenarios) {
+          fundamentalContext += `  Bullish if: ${r.scenarios.bullish}\n`;
+          fundamentalContext += `  Bearish if: ${r.scenarios.bearish}\n`;
+        }
+      });
+    }
+
+    // Get COT positioning extremes
+    const cotData = getAllCOTData();
+    if (cotData._summary?.extremes) {
+      const crowdedLong = cotData._summary.extremes.crowdedLong || [];
+      const crowdedShort = cotData._summary.extremes.crowdedShort || [];
+      if (crowdedLong.length > 0 || crowdedShort.length > 0) {
+        fundamentalContext += `\nCOT POSITIONING EXTREMES:\n`;
+        if (crowdedLong.length > 0) fundamentalContext += `- Crowded LONG (contrarian bearish): ${crowdedLong.join(', ')}\n`;
+        if (crowdedShort.length > 0) fundamentalContext += `- Crowded SHORT (contrarian bullish): ${crowdedShort.join(', ')}\n`;
+      }
+    }
+
+    // Get Put/Call sentiment
+    const putCallData = getPutCallRatio();
+    if (putCallData.summary) {
+      fundamentalContext += `\nPUT/CALL SENTIMENT: ${putCallData.summary.overallSentiment} - ${putCallData.summary.tradingImplication}\n`;
+    }
+
+    // Get EIA energy data
+    const eiaData = await fetchAllEnergyData(process.env.EIA_API_KEY).catch(() => null);
+    if (eiaData?.sentiment) {
+      fundamentalContext += `\nENERGY FUNDAMENTALS: ${eiaData.sentiment.overall} (${eiaData.sentiment.bullish} bullish, ${eiaData.sentiment.bearish} bearish signals)\n`;
+    }
+  } catch (err) {
+    console.warn('Could not fetch fundamental data for daily brief:', err.message);
+  }
+
   // Build brief without AI if no API key
   if (!client) {
     return buildFallbackBrief(marketData, newsSentiment, instruments, {
@@ -1437,11 +1492,13 @@ NEWS SENTIMENT:
 - Bullish: ${newsSentiment?.byBias?.bullish || 0}
 - Bearish: ${newsSentiment?.byBias?.bearish || 0}
 - High Impact: ${newsSentiment?.byImpact?.HIGH || 0}
-
+${fundamentalContext}
 Write the brief focusing on:
 1. Which instruments have the clearest setups today
 2. Key levels or conditions to watch
 3. Risk factors to be aware of
+4. ${todaysReports.length > 0 ? `IMPORTANT: Warn about the ${todaysReports.length} scheduled report(s) today and their potential impact` : 'Any positioning extremes from COT data'}
+5. ${eventRiskLevel === 'HIGH' ? 'Reduce position sizes before major reports' : 'Normal position sizing'}
 
 Keep it conversational but professional. No bullet points, just flowing text. Start with the most important thing to watch.`;
 
