@@ -97,6 +97,7 @@ const SECTOR_SYMBOLS = {
 
 // Asia Session Additions
 const ASIA_SESSION_SYMBOLS = {
+  '^N225': { name: 'Nikkei 225', symbol: 'N225', session: 'asia' },
   '^HSI': { name: 'Hang Seng Index', symbol: 'HSI', session: 'asia' },
   '000001.SS': { name: 'Shanghai Composite', symbol: 'SHANGHAI', session: 'asia' },
   '6A=F': { name: 'Australian Dollar Futures', symbol: '6A', session: 'asia' },
@@ -1269,6 +1270,7 @@ export async function fetchAsiaInstruments() {
 
   // Add fallback for missing
   const fallback = {
+    N225: { name: 'Nikkei 225', price: 38500, changePercent: 0.3, session: 'asia' },
     HSI: { name: 'Hang Seng Index', price: 17800, changePercent: -0.5, session: 'asia' },
     SHANGHAI: { name: 'Shanghai Composite', price: 3050, changePercent: 0.2, session: 'asia' },
     '6A': { name: 'Australian Dollar Futures', price: 0.6550, changePercent: -0.3, session: 'asia' },
