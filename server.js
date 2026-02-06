@@ -1719,9 +1719,10 @@ app.post('/api/analysis/cache/clear', (req, res) => {
 // CHATBOT ENDPOINTS - Ask questions about the dashboard
 // ============================================================================
 
-// Main chat endpoint - SMART analysis
-// Auto-detects "what to look for" questions and fetches all data
-// For simple questions, uses cached data only (fast)
+// Main chat endpoint - FULL CONTEXT AWARE
+// Chatbot now fetches ALL data itself: ES Command Center, Final Analysis,
+// Reports (NFP, CPI, EIA), COT positioning, Put/Call, News, etc.
+// Data is cached for 30 seconds for fast responses
 app.post('/api/chat', async (req, res) => {
   try {
     const { question } = req.body;
@@ -1733,19 +1734,9 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Use whatever cached data we have for simple questions
-    const dashboardData = {
-      instruments: cachedData?.instruments || {},
-      currencies: cachedData?.currencies || {},
-      sectors: cachedData?.sectors || {},
-      volatility: cachedData?.volatility || {},
-      session: getCurrentSession(),
-      nextSession: getNextSession()
-    };
-
-    // Smart answer - auto-detects market brief questions
-    // If asking "what to look for", fetches ALL data and analyzes
-    const response = await answerQuestionSmart(question, dashboardData);
+    // Smart answer - chatbot fetches ALL data internally (cached 30 sec)
+    // Knows about: reports, COT, news, drivers, correlations, everything
+    const response = await answerQuestionSmart(question);
 
     res.json(response);
   } catch (error) {

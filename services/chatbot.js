@@ -658,48 +658,204 @@ function formatKeywordMappings() {
 }
 
 // ============================================================================
-// MAIN CHAT FUNCTION
+// MAIN CHAT FUNCTION - Uses ALL available data
 // ============================================================================
 
+// Cache for full market context (30 second TTL)
+let fullContextCache = null;
+let contextCacheTimestamp = 0;
+const CONTEXT_CACHE_TTL = 30 * 1000;
+
+function isContextCacheValid() {
+  return fullContextCache && (Date.now() - contextCacheTimestamp < CONTEXT_CACHE_TTL);
+}
+
 /**
- * Answer a user question about the dashboard
+ * Build comprehensive market context for the AI
+ */
+async function buildFullMarketContext() {
+  // Return cached if valid
+  if (isContextCacheValid()) {
+    return fullContextCache;
+  }
+
+  console.log('Chatbot: Building full market context...');
+
+  // Fetch ALL data sources in parallel
+  const [
+    esCommandCenter,
+    finalAnalysis,
+    todaysReports,
+    eventRisk,
+    cotData,
+    putCallData
+  ] = await Promise.allSettled([
+    getESCommandCenter().catch(e => null),
+    generateFinalAnalysis().catch(e => null),
+    Promise.resolve(getTodaysReports()),
+    Promise.resolve(getEventRiskSummary()),
+    getAllCOTData().catch(e => null),
+    getPutCallRatio().catch(e => null)
+  ]);
+
+  const context = {
+    timestamp: new Date().toISOString(),
+    session: getCurrentSession(),
+    nextSession: getNextSession(),
+
+    // ES Command Center - drivers, correlations, institutional
+    esCommandCenter: esCommandCenter.status === 'fulfilled' ? {
+      es: esCommandCenter.value?.es,
+      bias: esCommandCenter.value?.bias,
+      drivers: esCommandCenter.value?.drivers?.slice(0, 6),
+      correlations: esCommandCenter.value?.correlations,
+      vix: esCommandCenter.value?.correlations?.VIX,
+      institutional: {
+        creditSpread: esCommandCenter.value?.institutional?.creditSpread,
+        gapAnalysis: esCommandCenter.value?.institutional?.gapAnalysis,
+        opex: esCommandCenter.value?.institutional?.opexCalendar,
+        seasonality: esCommandCenter.value?.institutional?.seasonality
+      },
+      mag7: esCommandCenter.value?.mag7?.stocks,
+      sectors: esCommandCenter.value?.sectors
+    } : null,
+
+    // Final Analysis - top picks, trending, news
+    analysis: finalAnalysis.status === 'fulfilled' ? {
+      topPicks: finalAnalysis.value?.topPicks?.slice(0, 5),
+      trending: finalAnalysis.value?.trendingInstruments?.slice(0, 5),
+      dailyBrief: finalAnalysis.value?.dailyBrief,
+      overallBias: finalAnalysis.value?.overallBias
+    } : null,
+
+    // Today's Reports - NFP, CPI, EIA, etc.
+    scheduledReports: todaysReports.status === 'fulfilled' ?
+      todaysReports.value?.map(r => ({
+        name: r.name,
+        shortName: r.shortName,
+        time: r.time,
+        importance: r.importance,
+        affectedInstruments: r.affectedInstruments,
+        scenarios: r.scenarios
+      })) : [],
+
+    // Event Risk Level
+    eventRisk: eventRisk.status === 'fulfilled' ? eventRisk.value : null,
+
+    // COT Positioning
+    cot: cotData.status === 'fulfilled' ? {
+      extremes: cotData.value?.extremes,
+      crowdedLong: cotData.value?.extremes?.crowdedLong || [],
+      crowdedShort: cotData.value?.extremes?.crowdedShort || []
+    } : null,
+
+    // Put/Call Sentiment
+    putCall: putCallData.status === 'fulfilled' ? {
+      equityPC: putCallData.value?.equityPC,
+      totalPC: putCallData.value?.totalPC,
+      interpretation: putCallData.value?.interpretation,
+      signal: putCallData.value?.signal
+    } : null,
+
+    // Top News Headlines
+    news: esCommandCenter.status === 'fulfilled' ?
+      esCommandCenter.value?.news?.slice(0, 10).map(n => ({
+        headline: n.headline,
+        bias: n.bias,
+        impact: n.impact,
+        affectedInstruments: n.affectedInstruments,
+        relativeTime: n.relativeTime
+      })) : []
+  };
+
+  // Cache it
+  fullContextCache = context;
+  contextCacheTimestamp = Date.now();
+
+  return context;
+}
+
+/**
+ * Answer a user question with FULL market context
  */
 async function answerQuestion(question, dashboardData = {}) {
-  // Gather current context
-  const context = await gatherDashboardContext(dashboardData);
+  // Get FULL market context (cached for 30 sec)
+  const fullContext = await buildFullMarketContext();
 
   // Get relevant knowledge based on question
   const relevantKnowledge = formatRelevantKnowledge(question);
 
-  // Build the prompt
-  const prompt = `You are the Jinah Dashboard AI Assistant. You help traders understand what they're seeing on their dashboard and explain market concepts.
+  // Build the prompt with ALL data
+  const prompt = `You are the Jinah Dashboard AI Assistant - a senior trading desk analyst. You have COMPLETE access to all market data.
 
-CURRENT DASHBOARD STATE:
-${JSON.stringify(context, null, 2)}
+=== CURRENT MARKET STATE ===
 
-RELEVANT KNOWLEDGE BASE:
+SESSION: ${fullContext.session?.name || 'Unknown'} (Next: ${fullContext.nextSession?.name})
+
+ES FUTURES:
+${fullContext.esCommandCenter?.es ? `- Price: ${fullContext.esCommandCenter.es.price} (${fullContext.esCommandCenter.es.changePercent?.toFixed(2)}%)
+- Bias: ${fullContext.esCommandCenter?.bias?.direction} (${fullContext.esCommandCenter?.bias?.confidence}% confidence)` : 'Data unavailable'}
+
+TOP DRIVERS RIGHT NOW:
+${fullContext.esCommandCenter?.drivers?.map(d => `- ${d.name}: ${d.direction} — ${d.reason}`).join('\n') || 'None detected'}
+
+KEY CORRELATIONS:
+${fullContext.esCommandCenter?.correlations ? `- VIX: ${fullContext.esCommandCenter.correlations.VIX?.price} (${fullContext.esCommandCenter.correlations.VIX?.changePercent?.toFixed(1)}%)
+- 10Y Yield: ${fullContext.esCommandCenter.correlations.TNX?.price}% (${fullContext.esCommandCenter.correlations.TNX?.changeBps}bp)
+- DXY: ${fullContext.esCommandCenter.correlations.DXY?.price} (${fullContext.esCommandCenter.correlations.DXY?.changePercent?.toFixed(2)}%)
+- NQ: ${fullContext.esCommandCenter.correlations.NQ?.changePercent?.toFixed(2)}%
+- RTY: ${fullContext.esCommandCenter.correlations.RTY?.changePercent?.toFixed(2)}%` : 'Data unavailable'}
+
+=== SCHEDULED REPORTS TODAY ===
+${fullContext.scheduledReports?.length > 0 ?
+  fullContext.scheduledReports.map(r => `- ${r.name} at ${r.time} [${r.importance}] → Affects: ${r.affectedInstruments?.join(', ')}`).join('\n')
+  : 'No major reports scheduled today'}
+
+EVENT RISK LEVEL: ${fullContext.eventRisk?.level || 'Unknown'}
+
+=== POSITIONING & SENTIMENT ===
+
+COT EXTREMES:
+- Crowded Long (contrarian bearish): ${fullContext.cot?.crowdedLong?.join(', ') || 'None'}
+- Crowded Short (contrarian bullish): ${fullContext.cot?.crowdedShort?.join(', ') || 'None'}
+
+PUT/CALL RATIO: ${fullContext.putCall?.equityPC || 'N/A'} — ${fullContext.putCall?.interpretation || 'No signal'}
+
+=== TOP PICKS FROM ANALYSIS ===
+${fullContext.analysis?.topPicks?.map(p => `- ${p.symbol}: ${p.bias} (${p.confidence}%) — ${p.summary || p.reason || ''}`).join('\n') || 'None'}
+
+=== TRENDING INSTRUMENTS ===
+${fullContext.analysis?.trending?.map(t => `- ${t.symbol}: ${t.mentionCount} mentions, ${t.bias}`).join('\n') || 'None'}
+
+=== LATEST NEWS ===
+${fullContext.news?.map(n => `- [${n.bias?.toUpperCase()}] ${n.headline} (${n.relativeTime})`).join('\n') || 'No recent news'}
+
+=== INSTITUTIONAL CONTEXT ===
+- Credit Spread: ${fullContext.esCommandCenter?.institutional?.creditSpread?.signal || 'N/A'}
+- Gap: ${fullContext.esCommandCenter?.institutional?.gapAnalysis?.gapType || 'N/A'} (${fullContext.esCommandCenter?.institutional?.gapAnalysis?.fillProbability}% fill probability)
+- OPEX: ${fullContext.esCommandCenter?.institutional?.opex?.context || 'N/A'}
+- Seasonality: ${fullContext.esCommandCenter?.institutional?.seasonality?.overallBias || 'N/A'}
+
+=== MAG7 IMPACT ===
+${fullContext.esCommandCenter?.mag7 ? Object.entries(fullContext.esCommandCenter.mag7).map(([sym, data]) =>
+  `- ${data.name}: ${data.changePercent?.toFixed(1)}% (${data.esContribution?.toFixed(1)} pts ES impact)`
+).join('\n') : 'Data unavailable'}
+
+=== KNOWLEDGE BASE ===
 ${relevantKnowledge}
 
-KEYWORD SYSTEM (how headlines are tagged with instruments):
-${formatKeywordMappings()}
-
-USER QUESTION:
+=== USER QUESTION ===
 ${question}
 
 INSTRUCTIONS:
-1. Answer the question clearly and concisely
-2. If asking about a specific headline, explain WHICH keywords triggered the sentiment and WHY those keywords matter
-3. If asking about an instrument's bias, explain the contributing factors from news, technicals, and fundamentals
-4. If asking about indicators or metrics, explain what they measure and current interpretation
-5. Use specific data from the dashboard state when available
-6. Be direct and actionable - this is for a trader making decisions
-7. If you don't have enough data to answer fully, say what additional info would help
+1. Answer using the SPECIFIC DATA above - cite numbers, levels, reports
+2. If asked about reports/events, use the SCHEDULED REPORTS section
+3. If asked about positioning, use the COT EXTREMES section
+4. If asked about news, use the LATEST NEWS section
+5. Be concise but complete - traders need actionable info
+6. If data is missing, say so clearly
 
-RESPONSE FORMAT:
-- Be conversational but professional
-- Use bullet points for clarity when listing multiple factors
-- Include specific numbers/values when relevant
-- End with actionable insight if appropriate`;
+Keep response under 200 words unless complex explanation needed.`;
 
   try {
     const response = await anthropic.messages.create({
