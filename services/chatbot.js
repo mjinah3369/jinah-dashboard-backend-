@@ -841,6 +841,15 @@ Explain in 3-4 bullet points:
 // COMPREHENSIVE MARKET ANALYSIS - "What to look for now"
 // ============================================================================
 
+// Cache for market brief (60 second TTL)
+let marketBriefCache = null;
+let briefCacheTimestamp = 0;
+const BRIEF_CACHE_TTL = 60 * 1000; // 60 seconds
+
+function isBriefCacheValid() {
+  return marketBriefCache && (Date.now() - briefCacheTimestamp < BRIEF_CACHE_TTL);
+}
+
 /**
  * Fetch ALL available data for comprehensive analysis
  */
@@ -895,6 +904,15 @@ async function fetchAllMarketData() {
  * Generate a smart market brief - "What to look for now"
  */
 async function getMarketBrief() {
+  // Return cached brief if valid
+  if (isBriefCacheValid()) {
+    console.log('Market Brief: returning cached data');
+    return marketBriefCache;
+  }
+
+  console.log('Market Brief: generating fresh analysis...');
+  const startTime = Date.now();
+
   const data = await fetchAllMarketData();
 
   // Build condensed summary for AI
@@ -995,12 +1013,19 @@ RULES:
       messages: [{ role: 'user', content: prompt }]
     });
 
-    return {
+    const result = {
       success: true,
       brief: response.content[0].text,
       data: summary,
       timestamp: new Date().toISOString()
     };
+
+    // Cache the result
+    marketBriefCache = result;
+    briefCacheTimestamp = Date.now();
+    console.log(`Market Brief: generated in ${Date.now() - startTime}ms`);
+
+    return result;
   } catch (error) {
     console.error('Market brief error:', error.message);
     return {
