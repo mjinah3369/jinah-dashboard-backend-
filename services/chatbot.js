@@ -1,16 +1,22 @@
 /**
- * Dashboard Chatbot Service
+ * Dashboard Chatbot Service — Enhanced with Full Market Analysis
  *
- * An AI-powered chatbot that can answer questions about:
- * - Dashboard data and what it means
- * - Why specific instruments are bullish/bearish
- * - What news headlines mean for markets
- * - How indicators and metrics work
- * - Market logic and relationships
+ * An AI-powered chatbot that can:
+ * - Analyze ALL live data and give actionable briefs
+ * - Answer questions about dashboard data
+ * - Explain why instruments are bullish/bearish
+ * - Explain news headlines and their market impact
+ * - Provide "what to look for now" analysis
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { NEWS_KEYWORD_MAP, KEYWORD_GROUP_TO_SYMBOLS, tagHeadlineWithSymbols } from './aiAgents.js';
+import { getESCommandCenter } from './esCommandCenter.js';
+import { generateFinalAnalysis } from './finalAnalysis.js';
+import { getCurrentSession, getNextSession } from './sessionEngine.js';
+import { getTodaysReports, getEventRiskSummary } from './reportSchedule.js';
+import { getAllCOTData } from './cftcCot.js';
+import { getPutCallRatio } from './cboePutCall.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -831,10 +837,236 @@ Explain in 3-4 bullet points:
   }
 }
 
+// ============================================================================
+// COMPREHENSIVE MARKET ANALYSIS - "What to look for now"
+// ============================================================================
+
+/**
+ * Fetch ALL available data for comprehensive analysis
+ */
+async function fetchAllMarketData() {
+  const results = {
+    timestamp: new Date().toISOString(),
+    session: getCurrentSession(),
+    nextSession: getNextSession()
+  };
+
+  // Fetch all data sources in parallel
+  const [
+    esCommandCenter,
+    finalAnalysis,
+    todaysReports,
+    eventRisk,
+    cotData,
+    putCallData
+  ] = await Promise.allSettled([
+    getESCommandCenter().catch(e => ({ error: e.message })),
+    generateFinalAnalysis().catch(e => ({ error: e.message })),
+    Promise.resolve(getTodaysReports()),
+    Promise.resolve(getEventRiskSummary()),
+    getAllCOTData().catch(e => ({ error: e.message })),
+    getPutCallRatio().catch(e => ({ error: e.message }))
+  ]);
+
+  // Extract successful results
+  if (esCommandCenter.status === 'fulfilled') {
+    results.esCommandCenter = esCommandCenter.value;
+  }
+  if (finalAnalysis.status === 'fulfilled') {
+    results.finalAnalysis = finalAnalysis.value;
+  }
+  if (todaysReports.status === 'fulfilled') {
+    results.todaysReports = todaysReports.value;
+  }
+  if (eventRisk.status === 'fulfilled') {
+    results.eventRisk = eventRisk.value;
+  }
+  if (cotData.status === 'fulfilled') {
+    results.cot = cotData.value;
+  }
+  if (putCallData.status === 'fulfilled') {
+    results.putCall = putCallData.value;
+  }
+
+  return results;
+}
+
+/**
+ * Generate a smart market brief - "What to look for now"
+ */
+async function getMarketBrief() {
+  const data = await fetchAllMarketData();
+
+  // Build condensed summary for AI
+  const summary = {
+    session: `${data.session?.name || 'Unknown'} session`,
+    nextSession: data.nextSession?.name || 'Unknown',
+
+    // ES specific
+    esPrice: data.esCommandCenter?.es?.price,
+    esChange: data.esCommandCenter?.es?.changePercent?.toFixed(2) + '%',
+    esBias: data.esCommandCenter?.bias?.direction,
+    esConfidence: data.esCommandCenter?.bias?.confidence,
+    topDrivers: data.esCommandCenter?.drivers?.slice(0, 4).map(d => ({
+      name: d.name,
+      direction: d.direction,
+      reason: d.reason
+    })),
+
+    // Key correlations
+    vix: data.esCommandCenter?.correlations?.VIX,
+    dxy: data.esCommandCenter?.correlations?.DXY,
+
+    // Institutional context
+    creditSpread: data.esCommandCenter?.institutional?.creditSpread?.signal,
+    gapType: data.esCommandCenter?.institutional?.gapAnalysis?.gapType,
+    gapFillProb: data.esCommandCenter?.institutional?.gapAnalysis?.fillProbability,
+
+    // Final analysis top picks
+    topPicks: data.finalAnalysis?.topPicks?.slice(0, 3).map(p => ({
+      symbol: p.symbol,
+      bias: p.bias,
+      confidence: p.confidence,
+      reason: p.summary || p.reason
+    })),
+
+    // Trending
+    trending: data.finalAnalysis?.trendingInstruments?.slice(0, 3).map(t => ({
+      symbol: t.symbol,
+      mentions: t.mentionCount,
+      bias: t.bias
+    })),
+
+    // Events
+    eventRisk: data.eventRisk?.level,
+    todaysReports: data.todaysReports?.slice(0, 3).map(r => ({
+      name: r.shortName || r.name,
+      time: r.time,
+      importance: r.importance,
+      affects: r.affectedInstruments?.slice(0, 3)
+    })),
+
+    // COT extremes
+    crowdedLong: data.cot?.extremes?.crowdedLong || [],
+    crowdedShort: data.cot?.extremes?.crowdedShort || [],
+
+    // Put/Call
+    putCallRatio: data.putCall?.equityPC,
+    putCallSignal: data.putCall?.interpretation,
+
+    // Top news
+    topNews: data.esCommandCenter?.news?.slice(0, 3).map(n => ({
+      headline: n.headline?.substring(0, 80),
+      bias: n.bias,
+      impact: n.impact
+    }))
+  };
+
+  // Generate AI brief
+  const prompt = `You are a senior trading desk analyst giving a 30-second morning brief. Be EXTREMELY concise.
+
+CURRENT MARKET STATE:
+${JSON.stringify(summary, null, 2)}
+
+Give a brief that answers "What should I look for now?" in this EXACT format:
+
+**[SESSION] BRIEF**
+
+🎯 **TOP FOCUS:** [1 symbol] - [1 sentence why]
+
+⚠️ **WATCH:** [1-2 other symbols with quick reason]
+
+📊 **DRIVERS:** [List 2-3 key drivers in bullet format]
+
+🗓️ **EVENTS:** [Any upcoming reports or "Clear calendar"]
+
+💡 **EDGE:** [One actionable insight]
+
+RULES:
+- Maximum 100 words total
+- No fluff, no disclaimers
+- Symbol + direction + why in minimal words
+- If no clear opportunity, say "No clear setup, wait for X"`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    return {
+      success: true,
+      brief: response.content[0].text,
+      data: summary,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('Market brief error:', error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Check if question is asking for market overview/brief
+ */
+function isMarketBriefQuestion(question) {
+  const briefKeywords = [
+    'what to look for',
+    'what should i look',
+    'what to watch',
+    'what\'s moving',
+    'whats moving',
+    'market brief',
+    'morning brief',
+    'quick brief',
+    'give me a brief',
+    'summary',
+    'overview',
+    'what\'s happening',
+    'whats happening',
+    'what now',
+    'what should i trade',
+    'any opportunities',
+    'any setups',
+    'what\'s the play',
+    'whats the play',
+    'what do you see',
+    'analyze the market',
+    'market analysis',
+    'current situation',
+    'give me the rundown',
+    'what\'s hot',
+    'whats hot'
+  ];
+
+  const questionLower = question.toLowerCase();
+  return briefKeywords.some(kw => questionLower.includes(kw));
+}
+
+/**
+ * Enhanced answer function with smart analysis
+ */
+async function answerQuestionSmart(question, cachedData = {}) {
+  // Check if asking for market brief/overview
+  if (isMarketBriefQuestion(question)) {
+    return await getMarketBrief();
+  }
+
+  // Otherwise use standard answer with cached data only (fast)
+  return await answerQuestion(question, cachedData);
+}
+
 export {
   answerQuestion,
+  answerQuestionSmart,
+  getMarketBrief,
   explainHeadline,
   explainInstrumentBias,
   gatherDashboardContext,
+  fetchAllMarketData,
   MARKET_KNOWLEDGE
 };

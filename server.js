@@ -73,6 +73,8 @@ import {
 } from './services/aiAgents.js';
 import {
   answerQuestion,
+  answerQuestionSmart,
+  getMarketBrief,
   explainHeadline,
   explainInstrumentBias
 } from './services/chatbot.js';
@@ -1717,8 +1719,9 @@ app.post('/api/analysis/cache/clear', (req, res) => {
 // CHATBOT ENDPOINTS - Ask questions about the dashboard
 // ============================================================================
 
-// Main chat endpoint - ask any question about the dashboard
-// Uses cached data only for speed - no fresh fetches
+// Main chat endpoint - SMART analysis
+// Auto-detects "what to look for" questions and fetches all data
+// For simple questions, uses cached data only (fast)
 app.post('/api/chat', async (req, res) => {
   try {
     const { question } = req.body;
@@ -1730,8 +1733,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Use whatever cached data we have - don't fetch fresh (too slow)
-    // The knowledge base in chatbot.js has all the market logic already
+    // Use whatever cached data we have for simple questions
     const dashboardData = {
       instruments: cachedData?.instruments || {},
       currencies: cachedData?.currencies || {},
@@ -1741,14 +1743,29 @@ app.post('/api/chat', async (req, res) => {
       nextSession: getNextSession()
     };
 
-    // Answer the question (fast - just uses knowledge base + Claude)
-    const response = await answerQuestion(question, dashboardData);
+    // Smart answer - auto-detects market brief questions
+    // If asking "what to look for", fetches ALL data and analyzes
+    const response = await answerQuestionSmart(question, dashboardData);
 
     res.json(response);
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({
       error: 'Chat failed',
+      message: error.message
+    });
+  }
+});
+
+// Direct market brief endpoint - comprehensive analysis
+app.get('/api/chat/brief', async (req, res) => {
+  try {
+    const brief = await getMarketBrief();
+    res.json(brief);
+  } catch (error) {
+    console.error('Market brief error:', error);
+    res.status(500).json({
+      error: 'Brief failed',
       message: error.message
     });
   }
