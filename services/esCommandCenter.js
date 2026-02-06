@@ -20,6 +20,17 @@ import {
   fetchCentralBankCalendar
 } from './fundamentalReports.js';
 
+// ============================================================================
+// CACHING - 30 second TTL for fast subsequent requests
+// ============================================================================
+let esCommandCenterCache = null;
+let esCacheTimestamp = 0;
+const ES_CACHE_TTL = 30 * 1000; // 30 seconds
+
+function isCacheValid() {
+  return esCommandCenterCache && (Date.now() - esCacheTimestamp < ES_CACHE_TTL);
+}
+
 // Yahoo Finance fetch helper
 async function fetchYahooQuote(symbol) {
   try {
@@ -94,8 +105,18 @@ const ES_KEYWORDS = {
 
 /**
  * Main function — Get everything driving ES right now
+ * Cached for 30 seconds to ensure fast response
  */
 async function getESCommandCenter() {
+  // Return cached data if valid
+  if (isCacheValid()) {
+    console.log('ES Command Center: returning cached data');
+    return esCommandCenterCache;
+  }
+
+  console.log('ES Command Center: fetching fresh data...');
+  const startTime = Date.now();
+
   const session = getCurrentSession();
   const nextSession = getNextSession();
 
@@ -136,7 +157,7 @@ async function getESCommandCenter() {
   // Get catalyst calendar
   const catalysts = getCatalystCalendar();
 
-  return {
+  const result = {
     timestamp: new Date().toISOString(),
     session: {
       name: session.name,
@@ -160,6 +181,13 @@ async function getESCommandCenter() {
     institutional: institutionalContext,
     catalysts
   };
+
+  // Cache the result
+  esCommandCenterCache = result;
+  esCacheTimestamp = Date.now();
+  console.log(`ES Command Center: fetched in ${Date.now() - startTime}ms`);
+
+  return result;
 }
 
 function getSessionEmoji(sessionKey) {
