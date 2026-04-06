@@ -92,6 +92,12 @@ import {
   getWarWatchCacheStatus
 } from './services/warWatch.js';
 import {
+  generateWarWatchAnalysis,
+  getTop5Affected,
+  clearWarAnalysisCache,
+  getWarAnalysisCacheStatus
+} from './services/warWatchAnalysis.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1977,6 +1983,51 @@ app.get('/api/warwatch/status', (req, res) => {
   });
 });
 
+// ============================================================================
+// WARWATCH AI ANALYSIS ENDPOINTS
+// ============================================================================
+
+// Full AI-powered war analysis (instruments, technicals, bias, AI brief)
+app.get('/api/warwatch/analysis', async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh === 'true';
+    console.log('Generating WarWatch AI analysis...');
+    const analysis = await generateWarWatchAnalysis({ forceRefresh });
+    res.json(analysis);
+  } catch (error) {
+    console.error('WarWatch analysis error:', error);
+    res.status(500).json({
+      error: 'Failed to generate WarWatch analysis',
+      message: error.message
+    });
+  }
+});
+
+// Top 5 most affected instruments only (lightweight)
+app.get('/api/warwatch/top5', async (req, res) => {
+  try {
+    const top5 = await getTop5Affected();
+    res.json({
+      instruments: top5,
+      count: top5.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('WarWatch top5 error:', error);
+    res.status(500).json({
+      error: 'Failed to get top 5 affected instruments',
+      message: error.message
+    });
+  }
+});
+
+// Force refresh analysis
+app.post('/api/warwatch/analysis/refresh', (req, res) => {
+  clearWarAnalysisCache();
+  clearWarWatchCache();
+  res.json({ message: 'WarWatch analysis and data cache cleared.' });
+});
+
 // WarWatch SSE broadcast interval — push updates to all connected clients every 3 minutes
 setInterval(async () => {
   if (warWatchPollingClients.length === 0) return;
@@ -2031,4 +2082,5 @@ app.listen(PORT, () => {
   console.log(`WarWatch: http://localhost:${PORT}/api/warwatch`);
   console.log(`WarWatch Alerts: http://localhost:${PORT}/api/warwatch/alerts`);
   console.log(`WarWatch Live Stream: http://localhost:${PORT}/api/warwatch/stream`);
+  console.log(`WarWatch AI Analysis: http://localhost:${PORT}/api/warwatch/analysis`);
 });
