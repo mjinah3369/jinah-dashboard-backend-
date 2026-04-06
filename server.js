@@ -83,6 +83,15 @@ import {
   getBiasBreakdown
 } from './services/esCommandCenter.js';
 import {
+  fetchWarWatchData,
+  getBreakingAlerts,
+  getConflictZone,
+  getRiskSummary,
+  getNewsByRegion,
+  clearWarWatchCache,
+  getWarWatchCacheStatus
+} from './services/warWatch.js';
+import {
   fetchGoogleSheetsNews,
   clearGoogleSheetsCache,
   getGoogleSheetsCacheStatus
@@ -1843,6 +1852,171 @@ app.get('/api/es/bias-breakdown', async (req, res) => {
   }
 });
 
+// ============================================================================
+// WARWATCH ENDPOINTS — Geopolitical Conflict Intelligence
+// ============================================================================
+
+// Cache for WarWatch (handled internally by service, but we add polling support here)
+let warWatchPollingClients = [];
+
+// Get full WarWatch report (news, zones, risk, alerts)
+app.get('/api/warwatch', async (req, res) => {
+  try {
+    console.log('Fetching WarWatch conflict intelligence...');
+    const data = await fetchWarWatchData();
+    res.json(data);
+  } catch (error) {
+    console.error('WarWatch error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch WarWatch data',
+      message: error.message
+    });
+  }
+});
+
+// Get geopolitical risk summary only (lightweight, for dashboard cards)
+app.get('/api/warwatch/risk', async (req, res) => {
+  try {
+    const summary = await getRiskSummary();
+    res.json(summary);
+  } catch (error) {
+    console.error('WarWatch risk summary error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch risk summary',
+      message: error.message
+    });
+  }
+});
+
+// Get breaking alerts (supports ?since=ISO_DATE for polling)
+app.get('/api/warwatch/alerts', (req, res) => {
+  try {
+    const since = req.query.since || null;
+    const alerts = getBreakingAlerts(since);
+    res.json({
+      alerts,
+      count: alerts.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('WarWatch alerts error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch alerts',
+      message: error.message
+    });
+  }
+});
+
+// Get specific conflict zone details
+app.get('/api/warwatch/zone/:zoneId', async (req, res) => {
+  try {
+    const zone = await getConflictZone(req.params.zoneId);
+    if (zone.error) {
+      return res.status(404).json(zone);
+    }
+    res.json(zone);
+  } catch (error) {
+    console.error('WarWatch zone error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch conflict zone',
+      message: error.message
+    });
+  }
+});
+
+// Get news filtered by region (e.g., /api/warwatch/region/middle%20east)
+app.get('/api/warwatch/region/:region', async (req, res) => {
+  try {
+    const data = await getNewsByRegion(req.params.region);
+    res.json(data);
+  } catch (error) {
+    console.error('WarWatch region error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch region data',
+      message: error.message
+    });
+  }
+});
+
+// SSE (Server-Sent Events) endpoint for live updates — frontend can subscribe
+app.get('/api/warwatch/stream', (req, res) => {
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // Send initial connection event
+  res.write(`data: ${JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() })}\n\n`);
+
+  // Add client to polling list
+  const clientId = Date.now();
+  warWatchPollingClients.push({ id: clientId, res });
+
+  console.log(`WarWatch SSE client connected: ${clientId} (total: ${warWatchPollingClients.length})`);
+
+  // Remove client on disconnect
+  req.on('close', () => {
+    warWatchPollingClients = warWatchPollingClients.filter(c => c.id !== clientId);
+    console.log(`WarWatch SSE client disconnected: ${clientId} (total: ${warWatchPollingClients.length})`);
+  });
+});
+
+// Force refresh WarWatch data
+app.post('/api/warwatch/refresh', (req, res) => {
+  clearWarWatchCache();
+  res.json({ message: 'WarWatch cache cleared. Next request will fetch fresh data.' });
+});
+
+// Get WarWatch cache status
+app.get('/api/warwatch/status', (req, res) => {
+  const status = getWarWatchCacheStatus();
+  res.json({
+    ...status,
+    sseClients: warWatchPollingClients.length
+  });
+});
+
+// WarWatch SSE broadcast interval — push updates to all connected clients every 3 minutes
+setInterval(async () => {
+  if (warWatchPollingClients.length === 0) return;
+
+  try {
+    const data = await fetchWarWatchData();
+
+    // Only broadcast if there are new breaking alerts
+    if (data.newAlerts && data.newAlerts.length > 0) {
+      const payload = JSON.stringify({
+        type: 'breaking',
+        alerts: data.newAlerts,
+        riskSummary: data.riskSummary,
+        timestamp: new Date().toISOString()
+      });
+
+      warWatchPollingClients.forEach(client => {
+        client.res.write(`data: ${payload}\n\n`);
+      });
+
+      console.log(`WarWatch: Broadcast ${data.newAlerts.length} alerts to ${warWatchPollingClients.length} clients`);
+    }
+
+    // Send heartbeat with risk level every cycle
+    const heartbeat = JSON.stringify({
+      type: 'heartbeat',
+      overallRisk: data.riskSummary.overallRisk,
+      breakingCount: data.riskSummary.breakingAlerts,
+      timestamp: new Date().toISOString()
+    });
+
+    warWatchPollingClients.forEach(client => {
+      client.res.write(`data: ${heartbeat}\n\n`);
+    });
+
+  } catch (error) {
+    console.error('WarWatch broadcast error:', error.message);
+  }
+}, 3 * 60 * 1000); // Every 3 minutes
+
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
   console.log(`Dashboard endpoint: http://localhost:${PORT}/api/dashboard`);
@@ -1854,4 +2028,7 @@ app.listen(PORT, () => {
   console.log(`Session Info: http://localhost:${PORT}/api/session/current`);
   console.log(`Chatbot: http://localhost:${PORT}/api/chat`);
   console.log(`ES Command Center: http://localhost:${PORT}/api/es/live`);
+  console.log(`WarWatch: http://localhost:${PORT}/api/warwatch`);
+  console.log(`WarWatch Alerts: http://localhost:${PORT}/api/warwatch/alerts`);
+  console.log(`WarWatch Live Stream: http://localhost:${PORT}/api/warwatch/stream`);
 });
