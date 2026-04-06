@@ -625,25 +625,82 @@ ${pcCtx}
 
 TRADING IMPLICATION: ${warData.riskSummary.tradingImplication}
 
-Write a 5-7 sentence brief covering:
-1. SITUATION: What is happening RIGHT NOW — the most critical development and who said/did what
-2. MOST AFFECTED: Which 2-3 instruments have the clearest war-driven setup and why
-3. TECHNICALS: For those instruments, what timeframe to trade and what indicators confirm the move (use the EMA/ADX data above)
-4. EXPECTED MOVE: What kind of price reaction is expected (use the expected move data)
-5. RISK: Key risks — could this de-escalate? What would flip the bias? Any official statements to watch for?
-6. If Trump, Iranian officials, or Gulf state officials made statements — highlight exactly what they said and the market implication
+You MUST respond with valid JSON only. No markdown, no text outside the JSON. Return this exact structure:
 
-Be direct, professional, no disclaimers. Use instrument symbols (CL, GC, ES, NQ etc). Start with the single most important thing a trader needs to know RIGHT NOW.`;
+{
+  "headline": "One-line summary of the #1 most critical development RIGHT NOW (max 15 words)",
+  "situation": "2-3 bullet points on what is happening — who did/said what, which zones are escalating",
+  "keyStatements": ["Direct quotes or paraphrased statements from Trump, Iran, Gulf officials — one per item, include [COUNTRY] tag"],
+  "topPicks": [
+    {
+      "symbol": "CL",
+      "direction": "LONG or SHORT",
+      "reason": "One line why — tie to the war event",
+      "entry": "How to enter (e.g. 'Buy dips near session low' or 'Sell rallies into resistance')",
+      "target": "Expected move in $ or points",
+      "stopLogic": "Where to stop and why"
+    }
+  ],
+  "technicals": "1-2 sentences on which timeframe and indicators matter for this event type",
+  "risk": "1-2 sentences on de-escalation risk — what flips the bias",
+  "actionVerdict": "One final sentence: the single most important action a trader should take RIGHT NOW"
+}
+
+Rules:
+- topPicks: include the top 2-3 instruments only (the clearest setups)
+- keyStatements: include 2-4 statements from officials (Trump, Iran, Gulf, Israel etc). If none, use empty array
+- Use instrument symbols (CL, GC, ES, NQ, 6J, DX etc)
+- Be direct, professional. No disclaimers.
+- situation should be an array of strings (bullet points)
+- MUST be valid parseable JSON`;
 
   try {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
+      max_tokens: 700,
       messages: [{ role: 'user', content: prompt }]
     });
 
+    const rawText = response.content[0]?.text || '';
+
+    // Parse JSON response
+    let parsed = null;
+    try {
+      // Try direct parse
+      parsed = JSON.parse(rawText);
+    } catch (e) {
+      // Try extracting JSON from markdown code blocks
+      const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[1].trim()); } catch (e2) { /* fall through */ }
+      }
+      // Try finding first { to last }
+      if (!parsed) {
+        const start = rawText.indexOf('{');
+        const end = rawText.lastIndexOf('}');
+        if (start !== -1 && end !== -1) {
+          try { parsed = JSON.parse(rawText.slice(start, end + 1)); } catch (e3) { /* fall through */ }
+        }
+      }
+    }
+
+    if (parsed) {
+      return {
+        ...parsed,
+        generated: true,
+        model: 'claude-sonnet',
+        timestamp: new Date().toISOString(),
+        // Keep raw text as fallback
+        text: rawText
+      };
+    }
+
+    // If JSON parse failed, return as text
     return {
-      text: response.content[0]?.text || '',
+      text: rawText,
+      headline: null,
+      situation: null,
+      topPicks: null,
       generated: true,
       model: 'claude-sonnet',
       timestamp: new Date().toISOString()
@@ -659,17 +716,28 @@ Be direct, professional, no disclaimers. Use instrument symbols (CL, GC, ES, NQ 
  */
 function buildFallbackWarBrief(warData, top5, eventType) {
   const risk = warData.riskSummary;
-  const topInst = top5.slice(0, 3).map(i => `${i.instrument} (${i.bias})`).join(', ');
   const zones = risk.escalatingZones?.join(', ') || 'multiple regions';
 
-  let brief = `GEOPOLITICAL RISK: ${risk.overallRisk}. `;
-  brief += `Escalation detected in ${zones}. `;
-  brief += `Most affected instruments: ${topInst}. `;
-  brief += `Event type: ${eventType.replace(/_/g, ' ')} — ${risk.tradingImplication}. `;
-  brief += `${risk.breakingAlerts} breaking alert(s) detected. Monitor for official statements from US, Iran, and Gulf officials.`;
-
   return {
-    text: brief,
+    headline: `${risk.overallRisk} geopolitical risk — ${eventType.replace(/_/g, ' ')}`,
+    situation: [
+      `Escalation detected in ${zones}`,
+      `${risk.breakingAlerts} breaking alert(s) active`,
+      risk.tradingImplication
+    ],
+    keyStatements: [],
+    topPicks: top5.slice(0, 3).map(inst => ({
+      symbol: inst.instrument,
+      direction: inst.warBias === 'BULLISH' ? 'LONG' : 'SHORT',
+      reason: inst.warReason,
+      entry: 'Monitor for headline-driven entries',
+      target: 'See expected move data',
+      stopLogic: 'Use session high/low as stop reference'
+    })),
+    technicals: `Event type ${eventType.replace(/_/g, ' ')} — use primary timeframe for momentum entries`,
+    risk: 'Monitor for de-escalation headlines that would flip bias',
+    actionVerdict: `${risk.marketBias} environment — safe havens bid, reduce equity exposure`,
+    text: null,
     generated: false,
     model: 'fallback',
     timestamp: new Date().toISOString()
