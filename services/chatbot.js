@@ -30,6 +30,7 @@ import {
   EXTENDED_INSTRUMENT_KNOWLEDGE,
   RESEARCH_KNOWLEDGE
 } from './CHATBOT_KNOWLEDGE_BASE.js';
+import { buildReportsCalendar } from './fundamentalReports.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -748,16 +749,43 @@ async function buildFullMarketContext() {
       overallBias: finalAnalysis.value?.overallBias
     } : null,
 
-    // Today's Reports - NFP, CPI, EIA, etc.
+    // Today's Reports from reportSchedule.js (field names: report, affects, impact, description)
     scheduledReports: todaysReports.status === 'fulfilled' ?
       todaysReports.value?.map(r => ({
-        name: r.name,
-        shortName: r.shortName,
-        time: r.time,
-        importance: r.importance,
-        affectedInstruments: r.affectedInstruments,
-        scenarios: r.scenarios
+        name: r.report || r.name || 'Unknown Report',
+        shortName: r.shortName || r.report || 'Report',
+        time: r.time || 'TBD',
+        importance: r.impact || r.importance || 'MEDIUM',
+        affectedInstruments: r.affects || r.affectedInstruments || [],
+        description: r.description || '',
+        scenarios: r.scenarios || null,
+        type: r.type || 'SCHEDULED'
       })) : [],
+
+    // Full Reports Calendar from fundamentalReports.js (richer data with scenarios)
+    upcomingReports: (() => {
+      try {
+        const cal = buildReportsCalendar();
+        return cal?.calendar?.slice(0, 3)?.map(day => ({
+          date: day.date,
+          dateLabel: day.dateLabel,
+          isToday: day.isToday,
+          isTomorrow: day.isTomorrow,
+          reports: day.reports?.map(r => ({
+            name: r.name || r.shortName,
+            shortName: r.shortName || r.name,
+            time: r.time,
+            importance: r.importance,
+            category: r.category,
+            affectedInstruments: r.affectedInstruments || [],
+            description: r.description || '',
+            scenarios: r.scenarios || null
+          }))
+        })) || [];
+      } catch (e) {
+        return [];
+      }
+    })(),
 
     // Event Risk Level
     eventRisk: eventRisk.status === 'fulfilled' ? eventRisk.value : null,
@@ -842,10 +870,15 @@ ${fullContext.esCommandCenter?.correlations ? `- VIX: ${fullContext.esCommandCen
 
 === SCHEDULED REPORTS TODAY ===
 ${fullContext.scheduledReports?.length > 0 ?
-  fullContext.scheduledReports.map(r => `- ${r.name} at ${r.time} [${r.importance}] → Affects: ${r.affectedInstruments?.join(', ')}`).join('\n')
-  : 'No major reports scheduled today'}
+  fullContext.scheduledReports.map(r => `- ${r.name} at ${r.time} [${r.importance}] → Affects: ${Array.isArray(r.affectedInstruments) ? r.affectedInstruments.join(', ') : r.affectedInstruments}${r.description ? ' — ' + r.description : ''}${r.scenarios ? '\n  Bullish: ' + r.scenarios.bullish + '\n  Bearish: ' + r.scenarios.bearish : ''}`).join('\n')
+  : 'No major reports from reportSchedule today'}
 
-EVENT RISK LEVEL: ${fullContext.eventRisk?.level || 'Unknown'}
+=== UPCOMING REPORTS CALENDAR (from dashboard) ===
+${fullContext.upcomingReports?.length > 0 ?
+  fullContext.upcomingReports.map(day => `${day.dateLabel} (${day.date}):\n${day.reports?.map(r => `  - ${r.name} at ${r.time} [${r.importance}] [${r.category}] → Affects: ${Array.isArray(r.affectedInstruments) ? r.affectedInstruments.join(', ') : r.affectedInstruments}${r.description ? '\n    ' + r.description : ''}${r.scenarios ? '\n    Bullish: ' + r.scenarios.bullish + '\n    Bearish: ' + r.scenarios.bearish : ''}`).join('\n') || '  No reports'}`).join('\n')
+  : 'No upcoming reports loaded'}
+
+EVENT RISK LEVEL: ${fullContext.eventRisk?.level || fullContext.eventRisk?.riskLevel || 'Unknown'}
 
 === POSITIONING & SENTIMENT ===
 
