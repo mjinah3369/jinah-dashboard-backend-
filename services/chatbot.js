@@ -1270,40 +1270,87 @@ function isMarketBriefQuestion(question) {
 
 /**
  * Check if question is a research/educational question that needs deep knowledge
+ * Only triggers for questions that are clearly asking for explanations about
+ * specific reports, concepts, or mechanisms — NOT simple market data queries
  */
 function isResearchQuestion(question) {
-  const researchKeywords = [
-    'what is', 'what are', 'what does',
-    'how does', 'how do', 'how is', 'how are',
-    'explain', 'tell me about', 'describe',
-    'what report', 'which report',
-    'how will', 'how would', 'how can',
-    'why does', 'why do', 'why is',
-    'what impact', 'what effect',
-    'what happens when', 'what happens if',
-    'teach me', 'help me understand',
+  const questionLower = question.toLowerCase().trim();
+
+  // Skip short questions (< 5 words) — those are simple data queries
+  if (questionLower.split(/\s+/).length < 5) return false;
+
+  // These specific topics ALWAYS trigger research mode
+  const topicKeywords = [
     'cattle on feed', 'wasde', 'crop progress',
     'eia report', 'nfp report', 'cpi report',
     'fomc meeting', 'cattle cycle',
     'carry trade', 'crack spread',
     'order block', 'value area', 'liquidity sweep',
     'yield curve', 'contango', 'backwardation',
-    'opex', 'options expiration',
-    'cot report', 'put call ratio'
+    'opex effect', 'options expiration effect',
+    'cot report', 'put call ratio',
+    'hogs and pigs', 'export sales report',
+    'planting intentions', 'treasury auction',
+    'cattle market', 'hog market',
+    'how dashboard', 'how bias is calculated'
   ];
 
-  const questionLower = question.toLowerCase();
-  return researchKeywords.some(kw => questionLower.includes(kw));
+  if (topicKeywords.some(kw => questionLower.includes(kw))) return true;
+
+  // These phrases indicate educational intent (but only if question is long enough)
+  const educationalPhrases = [
+    'what is the ', 'what are the ', 'what does the ',
+    'how does the ', 'how do the ',
+    'explain the ', 'explain how ', 'explain why ',
+    'tell me about the ', 'describe the ', 'describe how ',
+    'teach me about', 'help me understand',
+    'what impact does', 'what effect does',
+    'what happens when', 'what happens if',
+    'how will the ', 'how would the ',
+    'how is the ', 'how are the '
+  ];
+
+  if (educationalPhrases.some(kw => questionLower.includes(kw))) return true;
+
+  return false;
 }
 
 /**
  * Answer a research/educational question with deep knowledge base
+ * Falls back to standard handler if research handler fails
  */
-async function answerResearchQuestion(question) {
-  const knowledgeContext = buildKnowledgeContext(question);
-  const researchContext = searchResearchKnowledge(question);
+async function answerResearchQuestion(question, cachedData = {}) {
+  try {
+    // Safely build knowledge context — if KB import failed, these return empty strings
+    let knowledgeContext = '';
+    let researchContext = '';
+    let systemOverview = '';
 
-  const prompt = `You are the Jinah Dashboard AI Assistant — a senior trading desk analyst and educator. A trader is asking a research or educational question.
+    try {
+      knowledgeContext = buildKnowledgeContext(question) || '';
+    } catch (e) {
+      console.error('Knowledge context build failed:', e.message);
+    }
+
+    try {
+      researchContext = searchResearchKnowledge(question) || '';
+    } catch (e) {
+      console.error('Research context build failed:', e.message);
+    }
+
+    try {
+      systemOverview = DASHBOARD_SYSTEM_KNOWLEDGE?.overview || '';
+    } catch (e) {
+      systemOverview = '';
+    }
+
+    // If we got no knowledge context at all, fall back to standard handler
+    if (!knowledgeContext && !researchContext) {
+      console.log('Research: No knowledge context found, falling back to standard handler');
+      return await answerQuestion(question, cachedData);
+    }
+
+    const prompt = `You are the Jinah Dashboard AI Assistant — a senior trading desk analyst and educator. A trader is asking a research or educational question.
 
 QUESTION: "${question}"
 
@@ -1312,8 +1359,7 @@ ${knowledgeContext || 'No specific knowledge base match found.'}
 
 ${researchContext ? `=== RESEARCH CONCEPTS ===\n${researchContext}` : ''}
 
-=== DASHBOARD SYSTEM OVERVIEW ===
-${DASHBOARD_SYSTEM_KNOWLEDGE.overview}
+${systemOverview ? `=== DASHBOARD SYSTEM OVERVIEW ===\n${systemOverview}` : ''}
 
 INSTRUCTIONS:
 1. Answer the question thoroughly and educationally
@@ -1327,7 +1373,6 @@ INSTRUCTIONS:
 
 Aim for 200-500 words depending on complexity.`;
 
-  try {
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2000,
@@ -1341,12 +1386,18 @@ Aim for 200-500 words depending on complexity.`;
       timestamp: new Date().toISOString()
     };
   } catch (error) {
-    console.error('Research question error:', error.message);
-    return {
-      success: false,
-      error: error.message,
-      answer: 'I encountered an error processing your research question. Please try again.'
-    };
+    console.error('Research question error, falling back to standard handler:', error.message);
+    // FALLBACK: Use the standard answerQuestion instead of showing error
+    try {
+      return await answerQuestion(question, cachedData);
+    } catch (fallbackError) {
+      console.error('Fallback also failed:', fallbackError.message);
+      return {
+        success: false,
+        error: fallbackError.message,
+        answer: 'I encountered an error processing your question. Please try again.'
+      };
+    }
   }
 }
 
@@ -1361,7 +1412,7 @@ async function answerQuestionSmart(question, cachedData = {}) {
 
   // Check if this is a research/educational question
   if (isResearchQuestion(question)) {
-    return await answerResearchQuestion(question);
+    return await answerResearchQuestion(question, cachedData);
   }
 
   // Otherwise use standard answer with cached data only (fast)
