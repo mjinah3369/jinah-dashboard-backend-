@@ -714,8 +714,8 @@ async function buildFullMarketContext() {
     generateFinalAnalysis().catch(e => null),
     Promise.resolve(getTodaysReports()),
     Promise.resolve(getEventRiskSummary()),
-    getAllCOTData().catch(e => null),
-    getPutCallRatio().catch(e => null)
+    Promise.resolve(getAllCOTData()),
+    Promise.resolve(getPutCallRatio())
   ]);
 
   const context = {
@@ -1069,8 +1069,8 @@ async function fetchAllMarketData() {
     generateFinalAnalysis().catch(e => ({ error: e.message })),
     Promise.resolve(getTodaysReports()),
     Promise.resolve(getEventRiskSummary()),
-    getAllCOTData().catch(e => ({ error: e.message })),
-    getPutCallRatio().catch(e => ({ error: e.message }))
+    Promise.resolve(getAllCOTData()),
+    Promise.resolve(getPutCallRatio())
   ]);
 
   // Extract successful results
