@@ -1753,12 +1753,22 @@ app.post('/api/chat', async (req, res) => {
     // Knows about: reports, COT, news, drivers, correlations, everything
     const response = await answerQuestionSmart(question);
 
+    // Ensure 'answer' field always exists for frontend compatibility
+    // getMarketBrief returns 'brief' instead of 'answer'
+    if (!response.answer && response.brief) {
+      response.answer = response.brief;
+    }
+    if (!response.answer) {
+      response.answer = response.message || response.error || 'No response generated. Please try again.';
+    }
+
     res.json(response);
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({
       error: 'Chat failed',
-      message: error.message
+      message: error.message,
+      answer: 'Something went wrong on the server. Please try again in a moment.'
     });
   }
 });
