@@ -17,6 +17,19 @@ import { getCurrentSession, getNextSession } from './sessionEngine.js';
 import { getTodaysReports, getEventRiskSummary } from './reportSchedule.js';
 import { getAllCOTData } from './cftcCot.js';
 import { getPutCallRatio } from './cboePutCall.js';
+import {
+  buildKnowledgeContext,
+  getReportKnowledge,
+  getExtendedInstrumentKnowledge,
+  searchResearchKnowledge,
+  getCrossMarketAnalysis,
+  getSessionKnowledge,
+  REPORT_KNOWLEDGE,
+  DASHBOARD_SYSTEM_KNOWLEDGE,
+  CROSS_MARKET_KNOWLEDGE,
+  EXTENDED_INSTRUMENT_KNOWLEDGE,
+  RESEARCH_KNOWLEDGE
+} from './CHATBOT_KNOWLEDGE_BASE.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -492,10 +505,17 @@ async function gatherDashboardContext(dashboardData) {
 
 /**
  * Format relevant knowledge based on the question
+ * Enhanced with comprehensive knowledge base
  */
 function formatRelevantKnowledge(question) {
   const questionLower = question.toLowerCase();
   let relevantKnowledge = [];
+
+  // === ENHANCED: Pull from comprehensive knowledge base ===
+  const kbContext = buildKnowledgeContext(question);
+  if (kbContext && kbContext.trim().length > 0) {
+    relevantKnowledge.push(kbContext);
+  }
 
   // Check for instrument-specific questions
   for (const [symbol, info] of Object.entries(MARKET_KNOWLEDGE.instrumentRelationships)) {
@@ -786,7 +806,21 @@ async function answerQuestion(question, dashboardData = {}) {
   const relevantKnowledge = formatRelevantKnowledge(question);
 
   // Build the prompt with ALL data
-  const prompt = `You are the Jinah Dashboard AI Assistant - a senior trading desk analyst. You have COMPLETE access to all market data.
+  const prompt = `You are the Jinah Dashboard AI Assistant - a senior trading desk analyst with encyclopedic knowledge of futures markets, fundamental reports, and cross-market relationships.
+
+You have COMPLETE access to all market data AND a comprehensive knowledge base covering:
+- Every major economic/commodity report (WASDE, Cattle on Feed, EIA, NFP, CPI, FOMC, etc.)
+- How each report is generated, what it measures, and exactly how to read the results
+- Deep instrument profiles for 30+ futures contracts across indices, metals, energy, agriculture, currencies, and crypto
+- Cross-market correlations and what multi-asset moves mean
+- How the dashboard generates its outputs (bias calculations, context blurbs, AI analysis)
+- Educational explanations of trading concepts (carry trade, order blocks, value area, liquidity sweeps, etc.)
+- Agricultural market cycles (cattle cycle, crop seasons, etc.)
+- Session-specific analysis (Asia, London, US)
+
+When answering questions about reports, explain WHAT the report measures, HOW to read it, WHO publishes it, WHEN it comes out, and HOW it impacts specific instruments. Be specific and educational.
+
+When asked about market impact (e.g., "how will cattle on feed affect cattle"), provide the actual mechanism and historical context, not just generic commentary.
 
 === CURRENT MARKET STATE ===
 
@@ -849,13 +883,19 @@ ${question}
 
 INSTRUCTIONS:
 1. Answer using the SPECIFIC DATA above - cite numbers, levels, reports
-2. If asked about reports/events, use the SCHEDULED REPORTS section
-3. If asked about positioning, use the COT EXTREMES section
-4. If asked about news, use the LATEST NEWS section
-5. Be concise but complete - traders need actionable info
-6. If data is missing, say so clearly
+2. If asked about reports/events, use BOTH the SCHEDULED REPORTS section AND the KNOWLEDGE BASE for deep explanations
+3. If asked about positioning, use the COT EXTREMES section and explain what crowded positioning means
+4. If asked about news, use the LATEST NEWS section and explain WHY the headline is bullish/bearish
+5. If asked "what is" or "how does" questions, provide educational answers from the knowledge base
+6. If asked about a specific report (e.g., "what is cattle on feed"), explain what it measures, how to read it, when it comes out, and what the bullish/bearish scenarios are
+7. If asked about cross-market relationships, explain the correlation mechanism and trading implications
+8. If asked how dashboard outputs are generated, explain the data flow and calculation methodology
+9. Be concise for simple data queries, but thorough for educational/research questions
+10. Always explain the WHY behind market moves, not just the WHAT
+11. If data is missing, say so clearly
 
-Keep response under 200 words unless complex explanation needed.`;
+For data queries: keep under 200 words.
+For educational/research questions: be as thorough as needed (up to 500 words).`;
 
   try {
     const response = await anthropic.messages.create({
@@ -1229,12 +1269,99 @@ function isMarketBriefQuestion(question) {
 }
 
 /**
- * Enhanced answer function with smart analysis
+ * Check if question is a research/educational question that needs deep knowledge
+ */
+function isResearchQuestion(question) {
+  const researchKeywords = [
+    'what is', 'what are', 'what does',
+    'how does', 'how do', 'how is', 'how are',
+    'explain', 'tell me about', 'describe',
+    'what report', 'which report',
+    'how will', 'how would', 'how can',
+    'why does', 'why do', 'why is',
+    'what impact', 'what effect',
+    'what happens when', 'what happens if',
+    'teach me', 'help me understand',
+    'cattle on feed', 'wasde', 'crop progress',
+    'eia report', 'nfp report', 'cpi report',
+    'fomc meeting', 'cattle cycle',
+    'carry trade', 'crack spread',
+    'order block', 'value area', 'liquidity sweep',
+    'yield curve', 'contango', 'backwardation',
+    'opex', 'options expiration',
+    'cot report', 'put call ratio'
+  ];
+
+  const questionLower = question.toLowerCase();
+  return researchKeywords.some(kw => questionLower.includes(kw));
+}
+
+/**
+ * Answer a research/educational question with deep knowledge base
+ */
+async function answerResearchQuestion(question) {
+  const knowledgeContext = buildKnowledgeContext(question);
+  const researchContext = searchResearchKnowledge(question);
+
+  const prompt = `You are the Jinah Dashboard AI Assistant — a senior trading desk analyst and educator. A trader is asking a research or educational question.
+
+QUESTION: "${question}"
+
+=== KNOWLEDGE BASE CONTEXT ===
+${knowledgeContext || 'No specific knowledge base match found.'}
+
+${researchContext ? `=== RESEARCH CONCEPTS ===\n${researchContext}` : ''}
+
+=== DASHBOARD SYSTEM OVERVIEW ===
+${DASHBOARD_SYSTEM_KNOWLEDGE.overview}
+
+INSTRUCTIONS:
+1. Answer the question thoroughly and educationally
+2. Use the knowledge base context above — it contains detailed report explanations, instrument profiles, and market concepts
+3. Explain the MECHANISM — not just "it's bullish" but WHY and HOW
+4. Include specific numbers, dates, and schedules where relevant
+5. If the question is about a report, cover: what it measures, how to read it, when it comes out, bullish/bearish scenarios, and which instruments it affects
+6. If the question is about market impact, explain the transmission mechanism (e.g., "drought → less pasture → forced cattle liquidation → short-term supply surge → prices drop temporarily → long-term herd shrinkage → prices rise")
+7. Use bullet points and clear structure for readability
+8. Be thorough — this is an educational response, not a quick data query
+
+Aim for 200-500 words depending on complexity.`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    return {
+      success: true,
+      type: 'research',
+      answer: response.content[0].text,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('Research question error:', error.message);
+    return {
+      success: false,
+      error: error.message,
+      answer: 'I encountered an error processing your research question. Please try again.'
+    };
+  }
+}
+
+/**
+ * Enhanced answer function with smart analysis and research capability
  */
 async function answerQuestionSmart(question, cachedData = {}) {
   // Check if asking for market brief/overview
   if (isMarketBriefQuestion(question)) {
     return await getMarketBrief();
+  }
+
+  // Check if this is a research/educational question
+  if (isResearchQuestion(question)) {
+    return await answerResearchQuestion(question);
   }
 
   // Otherwise use standard answer with cached data only (fast)
@@ -1244,10 +1371,15 @@ async function answerQuestionSmart(question, cachedData = {}) {
 export {
   answerQuestion,
   answerQuestionSmart,
+  answerResearchQuestion,
   getMarketBrief,
   explainHeadline,
   explainInstrumentBias,
   gatherDashboardContext,
   fetchAllMarketData,
-  MARKET_KNOWLEDGE
+  isResearchQuestion,
+  MARKET_KNOWLEDGE,
+  REPORT_KNOWLEDGE,
+  EXTENDED_INSTRUMENT_KNOWLEDGE,
+  RESEARCH_KNOWLEDGE
 };
