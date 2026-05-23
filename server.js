@@ -129,6 +129,7 @@ app.use(express.json());
 // Cache to store data and reduce API calls
 let cachedData = null;
 let lastFetchTime = null;
+let inflightFetch = null; // Single-flight: shared promise while a fetch is running
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // Health check endpoint
@@ -136,116 +137,121 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Does the actual fan-out and dashboard build. Updates cachedData/lastFetchTime on success.
+// Called by the route handler AND by the background pre-warm scheduler.
+async function refreshDashboardData() {
+  console.log('Fetching fresh data from APIs...');
+
+  const [
+    futuresData,
+    economicData,
+    fredData,
+    polygonData,
+    currencyData,
+    internationalData,
+    finnhubNewsData,
+    newsApiData,
+    sectorData,
+    mag7Data,
+    mag7NewsData,
+    treasuryYieldsData,
+    cryptoData
+  ] = await Promise.allSettled([
+    fetchYahooFinanceFutures(),
+    fetchEconomicCalendar(),
+    fetchFredData(),
+    fetchPolygonData(),
+    fetchCurrencyFutures(),
+    fetchInternationalIndices(),
+    fetchFinnhubNews(),
+    fetchNewsApiHeadlines(),
+    fetchSectorETFs(),
+    fetchMag7Stocks(),
+    fetchMag7News(),
+    fetchTreasuryYields(),
+    fetchCryptoPrices()
+  ]);
+
+  const futures = futuresData.status === 'fulfilled' ? futuresData.value : {};
+  const economic = economicData.status === 'fulfilled' ? economicData.value : [];
+  const fred = fredData.status === 'fulfilled' ? fredData.value : {};
+  const polygon = polygonData.status === 'fulfilled' ? polygonData.value : {};
+  const currencies = currencyData.status === 'fulfilled' ? currencyData.value : {};
+  const international = internationalData.status === 'fulfilled' ? internationalData.value : {};
+  const finnhubNews = finnhubNewsData.status === 'fulfilled' ? finnhubNewsData.value : [];
+  const newsApiNews = newsApiData.status === 'fulfilled' ? newsApiData.value : [];
+  const sectors = sectorData.status === 'fulfilled' ? sectorData.value : {};
+  const mag7 = mag7Data.status === 'fulfilled' ? mag7Data.value : {};
+  const mag7News = mag7NewsData.status === 'fulfilled' ? mag7NewsData.value : {};
+  const treasuryYields = treasuryYieldsData.status === 'fulfilled' ? treasuryYieldsData.value : {};
+  const crypto = cryptoData.status === 'fulfilled' ? cryptoData.value : {};
+
+  let analyzedNews = [];
+  try {
+    analyzedNews = await analyzeAllSourcesNews({ lastHours: 2 });
+    console.log(`Analyzed news: ${analyzedNews.length} items with Claude AI analysis`);
+  } catch (err) {
+    console.warn('Could not fetch analyzed news, using raw news:', err.message);
+  }
+
+  const seenHeadlines = new Set();
+  const allNews = [...finnhubNews, ...newsApiNews]
+    .filter(item => {
+      const normalizedHeadline = (item.headline || item.title || '').toLowerCase().slice(0, 50);
+      if (seenHeadlines.has(normalizedHeadline)) return false;
+      seenHeadlines.add(normalizedHeadline);
+      return true;
+    })
+    .sort((a, b) => {
+      const timeA = new Date(a.timestamp || 0).getTime();
+      const timeB = new Date(b.timestamp || 0).getTime();
+      return timeB - timeA;
+    })
+    .slice(0, 20);
+
+  const news = analyzedNews.length > 0 ? analyzedNews : allNews;
+  console.log(`Using ${analyzedNews.length > 0 ? 'analyzed' : 'raw'} news: ${news.length} items`);
+
+  const expectationMeters = calculateExpectationMeters(futures, currencies, news);
+
+  const sources = ['Yahoo Finance', 'Alpha Vantage', 'FRED', 'Polygon', 'Currency', 'International', 'Finnhub News', 'NewsAPI', 'Sectors', 'Mag7 Stocks', 'Mag7 News', 'Treasury Yields', 'Crypto'];
+  [futuresData, economicData, fredData, polygonData, currencyData, internationalData, finnhubNewsData, newsApiData, sectorData, mag7Data, mag7NewsData, treasuryYieldsData, cryptoData].forEach((result, i) => {
+    if (result.status === 'rejected') {
+      console.error(`${sources[i]} error:`, result.reason?.message || result.reason);
+    }
+  });
+
+  const dashboard = buildDashboardResponse(futures, economic, fred, polygon, currencies, international, news, sectors, mag7, mag7News, treasuryYields, crypto, expectationMeters);
+
+  cachedData = dashboard;
+  lastFetchTime = Date.now();
+  return dashboard;
+}
+
 // Main dashboard endpoint
 app.get('/api/dashboard', async (req, res) => {
   try {
     const now = Date.now();
 
-    // Return cached data if still valid
     if (cachedData && lastFetchTime && (now - lastFetchTime) < CACHE_DURATION) {
       console.log('Returning cached data');
       return res.json(cachedData);
     }
 
-    console.log('Fetching fresh data from APIs...');
-
-    // Fetch data from all sources in parallel
-    const [
-      futuresData,
-      economicData,
-      fredData,
-      polygonData,
-      currencyData,
-      internationalData,
-      finnhubNewsData,
-      newsApiData,
-      sectorData,
-      mag7Data,
-      mag7NewsData,
-      treasuryYieldsData,
-      cryptoData
-    ] = await Promise.allSettled([
-      fetchYahooFinanceFutures(),
-      fetchEconomicCalendar(),
-      fetchFredData(),
-      fetchPolygonData(),
-      fetchCurrencyFutures(),
-      fetchInternationalIndices(),
-      fetchFinnhubNews(),
-      fetchNewsApiHeadlines(),
-      fetchSectorETFs(),
-      fetchMag7Stocks(),
-      fetchMag7News(),
-      fetchTreasuryYields(),
-      fetchCryptoPrices()
-    ]);
-
-    // Extract results (use empty defaults if failed)
-    const futures = futuresData.status === 'fulfilled' ? futuresData.value : {};
-    const economic = economicData.status === 'fulfilled' ? economicData.value : [];
-    const fred = fredData.status === 'fulfilled' ? fredData.value : {};
-    const polygon = polygonData.status === 'fulfilled' ? polygonData.value : {};
-    const currencies = currencyData.status === 'fulfilled' ? currencyData.value : {};
-    const international = internationalData.status === 'fulfilled' ? internationalData.value : {};
-    const finnhubNews = finnhubNewsData.status === 'fulfilled' ? finnhubNewsData.value : [];
-    const newsApiNews = newsApiData.status === 'fulfilled' ? newsApiData.value : [];
-    const sectors = sectorData.status === 'fulfilled' ? sectorData.value : {};
-    const mag7 = mag7Data.status === 'fulfilled' ? mag7Data.value : {};
-    const mag7News = mag7NewsData.status === 'fulfilled' ? mag7NewsData.value : {};
-    const treasuryYields = treasuryYieldsData.status === 'fulfilled' ? treasuryYieldsData.value : {};
-    const crypto = cryptoData.status === 'fulfilled' ? cryptoData.value : {};
-
-    // Fetch Claude AI analyzed news from all sources (Google Sheets, NewsAPI, Finnhub)
-    // This provides bias, relevance, and sentiment for each headline
-    let analyzedNews = [];
-    try {
-      analyzedNews = await analyzeAllSourcesNews({ lastHours: 2 });
-      console.log(`Analyzed news: ${analyzedNews.length} items with Claude AI analysis`);
-    } catch (err) {
-      console.warn('Could not fetch analyzed news, using raw news:', err.message);
+    // Single-flight: concurrent cache-miss requests share the same in-flight fetch
+    // instead of each launching a parallel fan-out (which caused OOM crashes).
+    if (!inflightFetch) {
+      inflightFetch = refreshDashboardData()
+        .finally(() => { inflightFetch = null; });
     }
-
-    // Merge raw news as fallback (for display in news feed)
-    const seenHeadlines = new Set();
-    const allNews = [...finnhubNews, ...newsApiNews]
-      .filter(item => {
-        const normalizedHeadline = (item.headline || item.title || '').toLowerCase().slice(0, 50);
-        if (seenHeadlines.has(normalizedHeadline)) return false;
-        seenHeadlines.add(normalizedHeadline);
-        return true;
-      })
-      .sort((a, b) => {
-        const timeA = new Date(a.timestamp || 0).getTime();
-        const timeB = new Date(b.timestamp || 0).getTime();
-        return timeB - timeA;
-      })
-      .slice(0, 20);
-
-    // Use analyzed news if available, otherwise fall back to raw news
-    const news = analyzedNews.length > 0 ? analyzedNews : allNews;
-    console.log(`Using ${analyzedNews.length > 0 ? 'analyzed' : 'raw'} news: ${news.length} items`);
-
-    // Calculate expectation meters
-    const expectationMeters = calculateExpectationMeters(futures, currencies, news);
-
-    // Log any errors
-    const sources = ['Yahoo Finance', 'Alpha Vantage', 'FRED', 'Polygon', 'Currency', 'International', 'Finnhub News', 'NewsAPI', 'Sectors', 'Mag7 Stocks', 'Mag7 News', 'Treasury Yields', 'Crypto'];
-    [futuresData, economicData, fredData, polygonData, currencyData, internationalData, finnhubNewsData, newsApiData, sectorData, mag7Data, mag7NewsData, treasuryYieldsData, cryptoData].forEach((result, i) => {
-      if (result.status === 'rejected') {
-        console.error(`${sources[i]} error:`, result.reason?.message || result.reason);
-      }
-    });
-
-    // Build the dashboard response
-    const dashboard = buildDashboardResponse(futures, economic, fred, polygon, currencies, international, news, sectors, mag7, mag7News, treasuryYields, crypto, expectationMeters);
-
-    // Cache the result
-    cachedData = dashboard;
-    lastFetchTime = now;
-
+    const dashboard = await inflightFetch;
     res.json(dashboard);
   } catch (error) {
     console.error('Dashboard API error:', error);
+    // Stale-cache fallback: better than 502 during upstream outages
+    if (cachedData) {
+      return res.json({ ...cachedData, stale: true });
+    }
     res.status(500).json({
       error: 'Failed to fetch dashboard data',
       message: error.message
@@ -2077,6 +2083,43 @@ setInterval(async () => {
     console.error('WarWatch broadcast error:', error.message);
   }
 }, 3 * 60 * 1000); // Every 3 minutes
+
+// ---- Dashboard pre-warm scheduler ----
+// Refreshes the dashboard cache every 4 minutes (just under the 5-min TTL) so users
+// never trigger a cold-start. Reuses the same inflightFetch guard as the route
+// handler, so a real user request during a scheduled refresh awaits the in-flight
+// promise instead of launching a second parallel fan-out (which caused OOM crashes).
+const DASHBOARD_REFRESH_INTERVAL = 4 * 60 * 1000;
+let dashboardRefreshTimer = null;
+
+async function prewarmDashboard(label) {
+  if (inflightFetch) {
+    console.log(`[prewarm:${label}] skip - fetch already in flight`);
+    return;
+  }
+  inflightFetch = refreshDashboardData()
+    .then(() => console.log(`[prewarm:${label}] ok`))
+    .catch(err => console.error(`[prewarm:${label}] failed:`, err.message))
+    .finally(() => { inflightFetch = null; });
+  await inflightFetch;
+}
+
+// Kick off initial fetch on boot so the first user never sees the cold-start delay
+prewarmDashboard('boot').catch(() => {});
+
+dashboardRefreshTimer = setInterval(
+  () => { prewarmDashboard('interval').catch(() => {}); },
+  DASHBOARD_REFRESH_INTERVAL
+);
+
+// Clean shutdown so Render doesn't get stray timers during deploys
+function shutdown(signal) {
+  console.log(`Received ${signal}, shutting down...`);
+  if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 app.listen(PORT, () => {
   console.log(`Jinah Dashboard API running on port ${PORT}`);
