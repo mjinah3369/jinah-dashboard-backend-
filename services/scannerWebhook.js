@@ -7,7 +7,10 @@
 // In-memory store for scanner data (resets on server restart)
 // For production, consider using Redis or a database
 const ictScannerData = new Map();    // ICT Model Scanner data
-const orderFlowData = new Map();      // Order Flow Scanner data
+const orderFlowData = new Map();      // Order Flow Scanner data (Pine/TradingView)
+const ninjaSignalsData = new Map();   // NinjaTrader Signal Scanner (current per-symbol state)
+const ninjaSignalsHistory = new Map(); // NinjaTrader Signal Scanner (ring buffer of recent events per symbol)
+const NINJA_HISTORY_LIMIT = 20;
 const lastUpdates = new Map();
 
 /**
@@ -27,6 +30,8 @@ export function processWebhook(payload) {
       return processICTWebhook(payload);
     } else if (scannerType === 'orderflow') {
       return processOrderFlowWebhook(payload);
+    } else if (scannerType === 'ninjatrader_signals') {
+      return processNinjaSignalsWebhook(payload);
     } else if (scannerType === 'batch') {
       return processBatchWebhook(payload);
     } else {
@@ -50,6 +55,15 @@ function detectScannerType(payload) {
   }
   if (payload.scanner_type === 'orderflow' || payload.scannerType === 'orderflow') {
     return 'orderflow';
+  }
+  if (
+    payload.scanner_type === 'ninjatrader_signals' ||
+    payload.scannerType === 'ninjatrader_signals' ||
+    // Back-compat: accept the prior identifier so a stale indicator doesn't 400.
+    payload.scanner_type === 'ninjatrader_orderflow' ||
+    payload.scannerType === 'ninjatrader_orderflow'
+  ) {
+    return 'ninjatrader_signals';
   }
 
   // Check for batch data array
@@ -239,6 +253,128 @@ function processOrderFlowWebhook(payload) {
   console.log(`[OF] ${symbol}: ${entry.pressure} | VA: ${entry.vaZone} | Delta: ${entry.delta}`);
 
   return { type: 'orderflow', data: entry };
+}
+
+// ============================================================================
+// NINJATRADER SIGNAL SCANNER (event + heartbeat stream from NT8 indicator)
+// Payload shape from JinahSignalScanner.cs:
+//   { scanner_type: 'ninjatrader_signals',
+//     kind: 'event' | 'heartbeat',
+//     d: [{ s, p, signals[], alertLevel, confluenceCount,
+//           levels: { vp, priorDayVp, priorDay, overnight, ib, openingRange,
+//                     pivots, emas, manual[], vwap },
+//           sessionContext: { gapDirection, gapPoints, gapPercent, openInsidePriorVA },
+//           delta: { bar, session, sma20Abs },
+//           volume: { bar, sma20, ratio },
+//           feedStatus, ts }, ...] }
+//
+// Heartbeats refresh lastUpdate + price only — they do NOT overwrite the last
+// signal context (so the dashboard can keep showing the most recent signal
+// state between events). Events overwrite the entry AND push to a per-symbol
+// ring buffer of the most recent NINJA_HISTORY_LIMIT events.
+// ============================================================================
+function processNinjaSignalsWebhook(payload) {
+  const timestamp = new Date().toISOString();
+  const receivedAt = Date.now();
+  const items = payload.data || payload.d || [];
+  const kind = payload.kind === 'heartbeat' ? 'heartbeat' : 'event';
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return { error: 'NinjaTrader payload has no data array' };
+  }
+
+  const results = [];
+
+  for (const item of items) {
+    const symbol = normalizeSymbol(item.s || item.symbol);
+    if (!symbol) continue;
+
+    const price = parseFloat(item.p || item.price) || 0;
+    const feedStatus = item.feedStatus || 'UP';
+    const itemTs = item.ts || timestamp;
+
+    if (kind === 'heartbeat') {
+      // Refresh price + lastUpdate; preserve previously captured signal context.
+      const prev = ninjaSignalsData.get(symbol);
+      if (prev) {
+        prev.price = price;
+        prev.feedStatus = feedStatus;
+        prev.lastHeartbeatAt = receivedAt;
+        prev.lastHeartbeatTs = itemTs;
+      } else {
+        // First contact is a heartbeat: stub entry with no signal context yet.
+        ninjaSignalsData.set(symbol, {
+          symbol,
+          timestamp,
+          receivedAt,
+          scannerType: 'ninjatrader_signals',
+          price,
+          feedStatus,
+          signals: [],
+          alertLevel: 'NONE',
+          confluenceCount: 0,
+          levels: null,
+          sessionContext: null,
+          delta: null,
+          volume: null,
+          lastHeartbeatAt: receivedAt,
+          lastHeartbeatTs: itemTs,
+          lastEventAt: null,
+          lastEventTs: null
+        });
+      }
+      lastUpdates.set(`ns_${symbol}`, receivedAt);
+      results.push({ symbol, kind: 'heartbeat', price });
+      continue;
+    }
+
+    // kind === 'event' — full overwrite + ring buffer push.
+    const entry = {
+      symbol,
+      timestamp,
+      receivedAt,
+      scannerType: 'ninjatrader_signals',
+      price,
+      feedStatus,
+
+      signals: Array.isArray(item.signals) ? item.signals.slice(0, 32) : [],
+      alertLevel: item.alertLevel || 'LOW',
+      confluenceCount: parseInt(item.confluenceCount, 10) || 0,
+
+      levels: item.levels || null,
+      sessionContext: item.sessionContext || null,
+      delta: item.delta || null,
+      volume: item.volume || null,
+
+      lastEventAt: receivedAt,
+      lastEventTs: itemTs,
+      lastHeartbeatAt: receivedAt,
+      lastHeartbeatTs: itemTs
+    };
+
+    ninjaSignalsData.set(symbol, entry);
+    lastUpdates.set(`ns_${symbol}`, receivedAt);
+
+    // Ring buffer of recent events for this symbol.
+    const history = ninjaSignalsHistory.get(symbol) || [];
+    history.unshift({
+      receivedAt,
+      ts: itemTs,
+      price,
+      signals: entry.signals,
+      alertLevel: entry.alertLevel,
+      confluenceCount: entry.confluenceCount
+    });
+    if (history.length > NINJA_HISTORY_LIMIT) history.length = NINJA_HISTORY_LIMIT;
+    ninjaSignalsHistory.set(symbol, history);
+
+    results.push(entry);
+
+    const sigList = entry.signals.length ? entry.signals.join(', ') : '(none)';
+    console.log(`[NinjaSig] ${symbol} ${entry.alertLevel} @ ${price}: ${sigList}`);
+  }
+
+  return { type: 'ninjatrader_signals', kind, count: results.length, data: results };
 }
 
 // ============================================================================
@@ -497,6 +633,29 @@ export function getOrderFlowScannerData() {
 }
 
 /**
+ * Get NinjaTrader Signals scanner data (current per-symbol state + recent events).
+ * `recentSignals` is the ring buffer of the last NINJA_HISTORY_LIMIT events.
+ * `isStale` is true if no heartbeat OR event in the last 5 minutes.
+ */
+export function getNinjaSignalsData() {
+  const now = Date.now();
+  const staleThreshold = 5 * 60 * 1000;
+  const data = {};
+
+  for (const [symbol, entry] of ninjaSignalsData) {
+    const lastUpdate = lastUpdates.get(`ns_${symbol}`) || 0;
+    data[symbol] = {
+      ...entry,
+      isStale: (now - lastUpdate) > staleThreshold,
+      lastUpdateAgo: formatTimeAgo(lastUpdate),
+      recentSignals: ninjaSignalsHistory.get(symbol) || []
+    };
+  }
+
+  return data;
+}
+
+/**
  * Get scanner data for a specific symbol
  */
 export function getScannerData(symbol) {
@@ -597,6 +756,8 @@ export function getScannerSummary() {
 export function clearScannerData() {
   ictScannerData.clear();
   orderFlowData.clear();
+  ninjaSignalsData.clear();
+  ninjaSignalsHistory.clear();
   lastUpdates.clear();
   console.log('All scanner data cleared');
 }
@@ -606,6 +767,7 @@ export default {
   getAllScannerData,
   getICTScannerData,
   getOrderFlowScannerData,
+  getNinjaSignalsData,
   getScannerData,
   getScannerSummary,
   clearScannerData
