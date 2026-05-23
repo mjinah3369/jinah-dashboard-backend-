@@ -272,8 +272,9 @@ const TREASURY_AUCTIONS = [
 // CENTRAL BANK CALENDARS
 // ============================================================================
 
-// 2025-2026 FOMC Meeting Dates (approximate, actual dates may vary)
-const FOMC_MEETINGS_2025_2026 = [
+// FOMC Meeting Dates (2025-2026 confirmed; extend with 2027 once published)
+// Exported so dashboardBuilder.js can build its Fed Watch widget from the same source.
+export const FOMC_MEETINGS = [
   // 2025
   { year: 2025, month: 1, days: [28, 29], pressConference: true },
   { year: 2025, month: 3, days: [18, 19], pressConference: true },
@@ -303,7 +304,7 @@ const CENTRAL_BANK_MEETINGS = {
     timeET: '14:00',
     importance: 'HIGH',
     affectedInstruments: ['ES', 'NQ', 'YM', 'RTY', 'ZN', 'ZB', 'DX', '6E', '6J', '6B', '6A', 'GC', 'CL'],
-    meetings: FOMC_MEETINGS_2025_2026,
+    meetings: FOMC_MEETINGS,
     description: 'Federal Reserve interest rate decision and policy statement. Most important market-moving event.',
     scenarios: {
       bullish: 'Dovish surprise (rate cut, pause in hikes, softer language)',
@@ -404,7 +405,7 @@ function getNextMonthlyDate(targetDay, fromDate = new Date()) {
 function getNextFOMCMeeting(fromDate = new Date()) {
   const now = fromDate.getTime();
 
-  for (const meeting of FOMC_MEETINGS_2025_2026) {
+  for (const meeting of FOMC_MEETINGS) {
     const meetingDate = new Date(meeting.year, meeting.month - 1, meeting.days[1]);
     if (meetingDate.getTime() > now) {
       return {
