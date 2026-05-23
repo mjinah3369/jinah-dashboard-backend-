@@ -37,6 +37,7 @@ import {
   getAllScannerData,
   getICTScannerData,
   getOrderFlowScannerData,
+  getNinjaOrderFlowData,
   getScannerData,
   getScannerSummary,
   clearScannerData
@@ -1138,7 +1139,7 @@ app.get('/api/earnings', async (req, res) => {
 // REAL-TIME SCANNER ENDPOINTS (TradingView Webhooks)
 // ============================================================================
 
-// Receive webhook from TradingView (supports ICT, OrderFlow, and Multi-Symbol)
+// Receive webhook from TradingView (ICT, OrderFlow, Multi-Symbol) and NinjaTrader (orderflow)
 app.post('/api/scanner/webhook', (req, res) => {
   try {
     const payload = req.body;
@@ -1148,6 +1149,20 @@ app.post('/api/scanner/webhook', (req, res) => {
         error: 'Empty payload',
         message: 'Webhook payload is empty'
       });
+    }
+
+    // Auth guard: NinjaTrader source must present the shared secret.
+    // (Pine/TradingView sources remain unauthenticated for now; consider adding later.)
+    if (payload.scanner_type === 'ninjatrader_orderflow' || payload.scannerType === 'ninjatrader_orderflow') {
+      const expected = process.env.NINJA_SCANNER_SECRET;
+      const provided = req.headers['x-ninja-secret'];
+      if (!expected) {
+        console.error('NINJA_SCANNER_SECRET env var not set on server; rejecting NinjaTrader payload');
+        return res.status(503).json({ error: 'NinjaTrader webhook not configured on server' });
+      }
+      if (!provided || provided !== expected) {
+        return res.status(401).json({ error: 'Unauthorized: invalid or missing x-ninja-secret header' });
+      }
     }
 
     const result = processWebhook(payload);
@@ -1234,6 +1249,26 @@ app.get('/api/scanner/orderflow', (req, res) => {
     console.error('Order Flow scanner data error:', error);
     res.status(500).json({
       error: 'Failed to get Order Flow scanner data',
+      message: error.message
+    });
+  }
+});
+
+// Get NinjaTrader Order Flow scanner data only (live bid/ask delta from NT8)
+// MUST be declared before the /:symbol catch-all below.
+app.get('/api/scanner/ninjatrader', (req, res) => {
+  try {
+    const data = getNinjaOrderFlowData();
+    res.json({
+      type: 'ninjatrader_orderflow',
+      count: Object.keys(data).length,
+      lastUpdate: new Date().toISOString(),
+      data
+    });
+  } catch (error) {
+    console.error('NinjaTrader scanner data error:', error);
+    res.status(500).json({
+      error: 'Failed to get NinjaTrader scanner data',
       message: error.message
     });
   }

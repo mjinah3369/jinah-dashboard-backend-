@@ -7,7 +7,8 @@
 // In-memory store for scanner data (resets on server restart)
 // For production, consider using Redis or a database
 const ictScannerData = new Map();    // ICT Model Scanner data
-const orderFlowData = new Map();      // Order Flow Scanner data
+const orderFlowData = new Map();      // Order Flow Scanner data (Pine/TradingView)
+const ninjaOrderFlowData = new Map(); // NinjaTrader Order Flow (live bid/ask delta)
 const lastUpdates = new Map();
 
 /**
@@ -27,6 +28,8 @@ export function processWebhook(payload) {
       return processICTWebhook(payload);
     } else if (scannerType === 'orderflow') {
       return processOrderFlowWebhook(payload);
+    } else if (scannerType === 'ninjatrader_orderflow') {
+      return processNinjaOrderFlowWebhook(payload);
     } else if (scannerType === 'batch') {
       return processBatchWebhook(payload);
     } else {
@@ -50,6 +53,9 @@ function detectScannerType(payload) {
   }
   if (payload.scanner_type === 'orderflow' || payload.scannerType === 'orderflow') {
     return 'orderflow';
+  }
+  if (payload.scanner_type === 'ninjatrader_orderflow' || payload.scannerType === 'ninjatrader_orderflow') {
+    return 'ninjatrader_orderflow';
   }
 
   // Check for batch data array
@@ -239,6 +245,76 @@ function processOrderFlowWebhook(payload) {
   console.log(`[OF] ${symbol}: ${entry.pressure} | VA: ${entry.vaZone} | Delta: ${entry.delta}`);
 
   return { type: 'orderflow', data: entry };
+}
+
+// ============================================================================
+// NINJATRADER ORDER FLOW SCANNER (live bid/ask delta from NT8 indicator)
+// Payload shape from JinahOrderFlowScanner.cs:
+//   { scanner_type: 'ninjatrader_orderflow',
+//     d: [{ s, p, delta (BULL|BEAR), deltaVal, bidVol, askVol, imbalance,
+//           sweep (SWEEP_HIGH|SWEEP_LOW|NONE), abs (ABSORP|NONE),
+//           vwap, poc, press (BULL|BEAR|NEUT), feedStatus (UP|DOWN), ts }, ...] }
+// ============================================================================
+function processNinjaOrderFlowWebhook(payload) {
+  const timestamp = new Date().toISOString();
+  const receivedAt = Date.now();
+  const items = payload.data || payload.d || [];
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return { error: 'NinjaTrader payload has no data array' };
+  }
+
+  const results = [];
+
+  for (const item of items) {
+    const symbol = normalizeSymbol(item.s || item.symbol);
+    if (!symbol) continue;
+
+    const entry = {
+      symbol,
+      timestamp,
+      receivedAt,
+      scannerType: 'ninjatrader_orderflow',
+
+      // Price
+      price: parseFloat(item.p || item.price) || 0,
+
+      // Delta (direction label + magnitude)
+      deltaDir: item.delta || 'NEUT',
+      deltaVal: parseFloat(item.deltaVal) || 0,
+
+      // Bid/Ask volume per current bar
+      bidVol: parseFloat(item.bidVol) || 0,
+      askVol: parseFloat(item.askVol) || 0,
+
+      // Footprint imbalance (-1 .. +1)
+      imbalance: parseFloat(item.imbalance) || 0,
+
+      // Liquidity sweep detection
+      sweep: item.sweep || 'NONE',
+
+      // Absorption detection
+      absorption: item.abs || item.absorption || 'NONE',
+
+      // Volume profile levels
+      vwap: parseFloat(item.vwap) || 0,
+      poc: parseFloat(item.poc) || 0,
+
+      // Pressure (multi-bar cumulative delta read)
+      pressure: item.press || item.pressure || 'NEUT',
+
+      // NinjaTrader connection health
+      feedStatus: item.feedStatus || 'UP'
+    };
+
+    ninjaOrderFlowData.set(symbol, entry);
+    lastUpdates.set(`nof_${symbol}`, receivedAt);
+    results.push(entry);
+
+    console.log(`[NinjaOF] ${symbol}: ${entry.pressure} | Delta: ${entry.deltaDir} (${entry.deltaVal.toFixed(0)}) | Sweep: ${entry.sweep} | Abs: ${entry.absorption}`);
+  }
+
+  return { type: 'ninjatrader_orderflow', count: results.length, data: results };
 }
 
 // ============================================================================
@@ -497,6 +573,26 @@ export function getOrderFlowScannerData() {
 }
 
 /**
+ * Get NinjaTrader Order Flow scanner data only
+ */
+export function getNinjaOrderFlowData() {
+  const now = Date.now();
+  const staleThreshold = 5 * 60 * 1000;
+  const data = {};
+
+  for (const [symbol, entry] of ninjaOrderFlowData) {
+    const lastUpdate = lastUpdates.get(`nof_${symbol}`) || 0;
+    data[symbol] = {
+      ...entry,
+      isStale: (now - lastUpdate) > staleThreshold,
+      lastUpdateAgo: formatTimeAgo(lastUpdate)
+    };
+  }
+
+  return data;
+}
+
+/**
  * Get scanner data for a specific symbol
  */
 export function getScannerData(symbol) {
@@ -597,6 +693,7 @@ export function getScannerSummary() {
 export function clearScannerData() {
   ictScannerData.clear();
   orderFlowData.clear();
+  ninjaOrderFlowData.clear();
   lastUpdates.clear();
   console.log('All scanner data cleared');
 }
@@ -606,6 +703,7 @@ export default {
   getAllScannerData,
   getICTScannerData,
   getOrderFlowScannerData,
+  getNinjaOrderFlowData,
   getScannerData,
   getScannerSummary,
   clearScannerData
