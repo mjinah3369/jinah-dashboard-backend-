@@ -779,8 +779,10 @@ export async function fetchWarWatchData() {
   const riskSummary = buildGeopoliticalRiskSummary(processedNews, conflictZones);
 
   // Build response
+  const _nowET = new Date();
   const result = {
-    lastUpdate: new Date().toISOString(),
+    lastUpdate: _nowET.toISOString(),
+    lastUpdateLabel: _nowET.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
     riskSummary,
     conflictZones,
     news: processedNews.slice(0, 30),     // Top 30 most relevant items
