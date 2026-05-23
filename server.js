@@ -37,7 +37,7 @@ import {
   getAllScannerData,
   getICTScannerData,
   getOrderFlowScannerData,
-  getNinjaOrderFlowData,
+  getNinjaSignalsData,
   getScannerData,
   getScannerSummary,
   clearScannerData
@@ -1153,7 +1153,12 @@ app.post('/api/scanner/webhook', (req, res) => {
 
     // Auth guard: NinjaTrader source must present the shared secret.
     // (Pine/TradingView sources remain unauthenticated for now; consider adding later.)
-    if (payload.scanner_type === 'ninjatrader_orderflow' || payload.scannerType === 'ninjatrader_orderflow') {
+    // Accepts the new 'ninjatrader_signals' identifier plus the prior
+    // 'ninjatrader_orderflow' string for back-compat with stale indicators.
+    const ninjaType =
+      payload.scanner_type === 'ninjatrader_signals' || payload.scannerType === 'ninjatrader_signals' ||
+      payload.scanner_type === 'ninjatrader_orderflow' || payload.scannerType === 'ninjatrader_orderflow';
+    if (ninjaType) {
       const expected = process.env.NINJA_SCANNER_SECRET;
       const provided = req.headers['x-ninja-secret'];
       if (!expected) {
@@ -1254,13 +1259,13 @@ app.get('/api/scanner/orderflow', (req, res) => {
   }
 });
 
-// Get NinjaTrader Order Flow scanner data only (live bid/ask delta from NT8)
+// Get NinjaTrader Signals scanner data (event + heartbeat stream from NT8)
 // MUST be declared before the /:symbol catch-all below.
 app.get('/api/scanner/ninjatrader', (req, res) => {
   try {
-    const data = getNinjaOrderFlowData();
+    const data = getNinjaSignalsData();
     res.json({
-      type: 'ninjatrader_orderflow',
+      type: 'ninjatrader_signals',
       count: Object.keys(data).length,
       lastUpdate: new Date().toISOString(),
       data
