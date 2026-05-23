@@ -3,6 +3,7 @@
 import { calculateBias, calculateDXYStrength } from './yahooFinance.js';
 import { analyzeFredConditions } from './fred.js';
 import { getNewsForInstrument } from './finnhubNews.js';
+import { FOMC_MEETINGS } from './fundamentalReports.js';
 
 // Symbol keywords for matching news to instruments
 const NEWS_SYMBOL_KEYWORDS = {
@@ -1307,20 +1308,33 @@ function buildQuickStats(treasuryYields, crypto, currencies) {
 function buildFedWatch() {
   const now = new Date();
 
-  // Next FOMC meeting dates (update these periodically)
-  const fomcDates = [
-    new Date('2025-03-18T14:00:00-05:00'),
-    new Date('2025-05-06T14:00:00-05:00'),
-    new Date('2025-06-17T14:00:00-05:00'),
-    new Date('2025-07-29T14:00:00-05:00'),
-    new Date('2025-09-16T14:00:00-05:00'),
-    new Date('2025-11-04T14:00:00-05:00'),
-    new Date('2025-12-16T14:00:00-05:00')
-  ];
+  // Build FOMC meeting dates from the canonical FOMC_MEETINGS list in fundamentalReports.js.
+  // Each meeting object is { year, month, days, pressConference } — use the last day at 14:00 ET.
+  const fomcDates = FOMC_MEETINGS
+    .map(m => {
+      const lastDay = m.days[m.days.length - 1];
+      // Month is 1-indexed in FOMC_MEETINGS; Date() expects 0-indexed
+      return new Date(`${m.year}-${String(m.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T14:00:00-05:00`);
+    })
+    .sort((a, b) => a - b);
 
-  // Find next meeting
-  const nextMeeting = fomcDates.find(d => d > now) || fomcDates[0];
-  const daysUntil = Math.ceil((nextMeeting - now) / (1000 * 60 * 60 * 24));
+  // Find next future meeting. If none (e.g. list is stale), return TBD shape so UI
+  // shows "TBD" rather than a past date with a negative countdown.
+  const nextMeeting = fomcDates.find(d => d > now);
+
+  const nextMeetingShape = nextMeeting
+    ? {
+        date: nextMeeting.toISOString().split('T')[0],
+        dateFormatted: nextMeeting.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        daysUntil: Math.ceil((nextMeeting - now) / (1000 * 60 * 60 * 24)),
+        countdown: `${Math.ceil((nextMeeting - now) / (1000 * 60 * 60 * 24))} days`
+      }
+    : {
+        date: null,
+        dateFormatted: 'TBD',
+        daysUntil: null,
+        countdown: 'TBD'
+      };
 
   // Fed speakers (sample data - should be updated with real calendar)
   const fedSpeakers = [
@@ -1338,12 +1352,7 @@ function buildFedWatch() {
   };
 
   return {
-    nextMeeting: {
-      date: nextMeeting.toISOString().split('T')[0],
-      dateFormatted: nextMeeting.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      daysUntil: daysUntil,
-      countdown: `${daysUntil} days`
-    },
+    nextMeeting: nextMeetingShape,
     currentRate: '4.25% - 4.50%',
     rateExpectations: rateExpectations,
     marketExpectation: rateExpectations.hold > 50 ? 'HOLD' : rateExpectations.cut25bp > 50 ? 'CUT' : 'MIXED',
@@ -1414,11 +1423,14 @@ function buildTickerContent(news, macroEvents, fedWatch) {
   }
 
   // Add next FOMC countdown
+  const fomcContent = fedWatch.nextMeeting.daysUntil != null
+    ? `Next meeting: ${fedWatch.nextMeeting.dateFormatted} (${fedWatch.nextMeeting.countdown})`
+    : `Next meeting: TBD`;
   items.push({
     type: 'fomc',
     icon: '📅',
     label: 'FOMC',
-    content: `Next meeting: ${fedWatch.nextMeeting.dateFormatted} (${fedWatch.nextMeeting.countdown})`
+    content: fomcContent
   });
 
   return items;

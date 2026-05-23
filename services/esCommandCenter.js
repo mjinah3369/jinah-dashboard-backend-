@@ -157,8 +157,10 @@ async function getESCommandCenter() {
   // Get catalyst calendar
   const catalysts = getCatalystCalendar();
 
+  const _nowET = new Date();
   const result = {
-    timestamp: new Date().toISOString(),
+    timestamp: _nowET.toISOString(),
+    timestampLabel: _nowET.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
     session: {
       name: session.name,
       key: session.key,

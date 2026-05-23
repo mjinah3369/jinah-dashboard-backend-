@@ -1,6 +1,25 @@
 // Yahoo Finance - Futures Prices (No API key needed)
 // Uses the unofficial Yahoo Finance API with fallback data
 
+// Retry helper for Yahoo's flaky 429 (Too Many Requests) and 503 responses.
+// Native fetch + setTimeout, no new deps. One retry with 2s backoff.
+const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function fetchWithRetry(url, options, { retries = 1, backoffMs = 2000 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(url, options);
+      if ((resp.status === 429 || resp.status === 503) && attempt < retries) {
+        await _sleep(backoffMs);
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      if (attempt < retries) { await _sleep(backoffMs); continue; }
+      throw err;
+    }
+  }
+}
+
 // Equity Index Futures
 const EQUITY_INDEX_SYMBOLS = {
   'ES=F': { name: 'S&P 500 E-mini', symbol: 'ES', sector: 'indices' },
@@ -154,7 +173,7 @@ export async function fetchYahooFinanceFutures() {
     const config = FUTURES_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -305,7 +324,7 @@ export async function fetchCurrencyFutures() {
     const config = CURRENCY_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -412,7 +431,7 @@ export async function fetchInternationalIndices() {
     const config = INTERNATIONAL_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -541,7 +560,7 @@ export async function fetchSectorETFs() {
     const config = SECTOR_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -660,7 +679,7 @@ export async function fetchMag7Stocks() {
     const config = MAG7_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -801,7 +820,7 @@ export async function fetchTreasuryYields() {
     const config = TREASURY_YIELD_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -890,7 +909,7 @@ export async function fetchCryptoPrices() {
     const config = CRYPTO_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -1240,7 +1259,7 @@ export async function fetchAsiaInstruments() {
     const config = ASIA_SESSION_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -1319,7 +1338,7 @@ export async function fetchLondonInstruments() {
     const config = LONDON_SESSION_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -1394,7 +1413,7 @@ export async function fetchUSInstruments() {
     const config = US_SESSION_SYMBOLS[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=2d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -1504,7 +1523,7 @@ export async function fetchBreadthIndicators() {
     const config = allSymbols[yahooSymbol];
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=5d`;
-      const response = await fetch(url, {
+      const response = await fetchWithRetry(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
