@@ -26,6 +26,64 @@ let lastFullAnalysis = null;
 let fullAnalysisTime = null;
 const ANALYSIS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes for full analysis
 
+// ============================================================================
+// DEGRADED-STATE TRACKING (Fix 4b)
+// ============================================================================
+// When the Claude analysis call fails, we no longer guess symbol tags via
+// keyword-substring matching (that's what produced "Brazil World Cup → CHINA"
+// type bugs). Instead we ship empty symbols + relevance=0 so downstream
+// suppression rules can hide the item.
+//
+// This counter lets a status endpoint surface "news analysis degraded" so the
+// failure mode is diagnosable without being customer-facing.
+//
+// TODO: paid news feed integration coming — review fallback when implemented.
+// ============================================================================
+let degradedFallbackCount = 0;
+let lastDegradedAt = null;
+let lastDegradedReason = null;
+
+function recordDegradedFallback(reason) {
+  degradedFallbackCount++;
+  lastDegradedAt = new Date().toISOString();
+  lastDegradedReason = reason;
+  console.warn(`[newsAnalysis] degraded fallback fired (#${degradedFallbackCount}): ${reason}`);
+}
+
+export function getNewsAnalysisDegradedStatus() {
+  return {
+    degradedFallbackCount,
+    lastDegradedAt,
+    lastDegradedReason,
+    // True when the most recent analysis run had to fall back.
+    isDegraded: lastDegradedAt !== null
+      && fullAnalysisTime !== null
+      && new Date(lastDegradedAt).getTime() >= fullAnalysisTime,
+  };
+}
+
+/**
+ * Build an "analysis unavailable" placeholder for a headline. Used when the
+ * Claude call fails or returns garbage. Downstream consumers should suppress
+ * items where symbols is empty AND relevance is 0.
+ */
+function buildUnanalyzedHeadline(headline, reason) {
+  recordDegradedFallback(reason);
+  return {
+    ...headline,
+    summary: headline.headline,
+    symbols: [],
+    affectedInstruments: [],
+    impact: 'UNKNOWN',
+    bias: 'neutral',
+    timeframe: 'intraday',
+    relevance: 0,
+    category: 'General',
+    isAnalyzed: false,
+    analysisUnavailable: true,
+  };
+}
+
 // Symbol mapping for futures
 const SYMBOL_KEYWORDS = {
   ES: ['s&p', 'sp500', 'spx', 'equity', 'stock market', 'wall street', 'dow jones', 'nasdaq', 'stocks'],
@@ -51,7 +109,12 @@ const SYMBOL_KEYWORDS = {
 };
 
 /**
- * Detect affected symbols from headline text (quick heuristic)
+ * Detect affected symbols from headline text (quick heuristic).
+ *
+ * @deprecated For LLM fallback use (Fix 4b). Substring keyword matching
+ * produces false positives like "Brazil World Cup story → CHINA" because
+ * common words trip multiple buckets. Kept around for any non-LLM callers
+ * but NOT used as a fallback when Claude fails.
  */
 function detectSymbolsFromText(text) {
   const lowerText = text.toLowerCase();
@@ -127,18 +190,7 @@ export async function analyzeHeadlinesBatch(headlines) {
 
   if (!client) {
     console.warn('Anthropic client not available - returning unanalyzed headlines');
-    return headlines.map(h => ({
-      ...h,
-      summary: h.headline,
-      symbols: detectSymbolsFromText(h.headline),
-      affectedInstruments: detectSymbolsFromText(h.headline),
-      impact: 'LOW',
-      bias: 'neutral',
-      timeframe: 'intraday',
-      relevance: 5,
-      category: 'General',
-      isAnalyzed: false
-    }));
+    return headlines.map(h => buildUnanalyzedHeadline(h, 'no_anthropic_client'));
   }
 
   try {
@@ -165,54 +217,38 @@ export async function analyzeHeadlinesBatch(headlines) {
     } catch (parseError) {
       console.error('Failed to parse Claude response:', parseError);
       console.log('Raw response:', content.substring(0, 500));
-      return headlines.map(h => ({
-        ...h,
-        summary: h.headline,
-        symbols: detectSymbolsFromText(h.headline),
-        affectedInstruments: detectSymbolsFromText(h.headline),
-        impact: 'LOW',
-        bias: 'neutral',
-        timeframe: 'intraday',
-        relevance: 5,
-        category: 'General',
-        isAnalyzed: false
-      }));
+      return headlines.map(h => buildUnanalyzedHeadline(h, 'json_parse_error'));
     }
 
-    // Merge analysis with original headlines
+    // Merge analysis with original headlines.
+    // When Claude returned a result for a given headline, use it. When the
+    // specific headline is MISSING from Claude's response (partial failure),
+    // mark it as analysis-unavailable rather than guessing symbols.
     return headlines.map((headline, idx) => {
-      const analysis = analysisResults.find(a => a.index === idx + 1) || {};
-
+      const analysis = analysisResults.find(a => a.index === idx + 1);
+      if (!analysis) {
+        return buildUnanalyzedHeadline(headline, 'missing_in_batch_response');
+      }
       return {
         ...headline,
         summary: analysis.summary || headline.headline,
-        symbols: analysis.symbols || detectSymbolsFromText(headline.headline),
-        affectedInstruments: analysis.symbols || detectSymbolsFromText(headline.headline),
+        symbols: Array.isArray(analysis.symbols) ? analysis.symbols : [],
+        affectedInstruments: Array.isArray(analysis.symbols) ? analysis.symbols : [],
         impact: (analysis.impact || 'low').toUpperCase(),
         bias: analysis.bias || 'neutral',
         timeframe: analysis.timeframe || 'intraday',
-        relevance: analysis.relevance || 5,
+        relevance: typeof analysis.relevance === 'number' ? analysis.relevance : 5,
         category: analysis.category || 'General',
-        isAnalyzed: true
+        isAnalyzed: true,
+        analysisUnavailable: false,
       };
     });
   } catch (error) {
     console.error('Claude analysis error:', error.message);
     console.error('Full error:', error);
-
-    // Return with heuristic analysis on error
-    return headlines.map(h => ({
-      ...h,
-      summary: h.headline,
-      symbols: detectSymbolsFromText(h.headline),
-      affectedInstruments: detectSymbolsFromText(h.headline),
-      impact: 'LOW',
-      bias: 'neutral',
-      timeframe: 'intraday',
-      relevance: 5,
-      category: 'General',
-      isAnalyzed: false
-    }));
+    // No symbol-guessing fallback (Fix 4b) - empty symbols + relevance 0 so
+    // downstream consumers can suppress the item entirely.
+    return headlines.map(h => buildUnanalyzedHeadline(h, `claude_call_error: ${error.message}`));
   }
 }
 
@@ -340,7 +376,8 @@ export function getAnalysisCacheStatus() {
     fullAnalysisItemCount: lastFullAnalysis?.length || 0,
     cacheAge: fullAnalysisTime ? Date.now() - fullAnalysisTime : null,
     maxAge: ANALYSIS_CACHE_DURATION,
-    hasApiKey: !!process.env.ANTHROPIC_API_KEY
+    hasApiKey: !!process.env.ANTHROPIC_API_KEY,
+    degraded: getNewsAnalysisDegradedStatus(),
   };
 }
 
@@ -464,10 +501,24 @@ export async function analyzeAllSourcesNews(options = {}) {
  */
 export async function getNewsSentimentSummary(options = {}) {
   const { lastHours = 1 } = options;
-  const news = await analyzeAllSourcesNews({ lastHours });
+  const allNews = await analyzeAllSourcesNews({ lastHours });
+
+  // Fix 4b: exclude items where Claude analysis was unavailable. These have
+  // empty symbols + relevance 0 and would otherwise pollute the factor
+  // breakdown news weight with meaningless counts.
+  const isMeaningful = (n) =>
+    !n.analysisUnavailable
+    && Array.isArray(n.symbols)
+    && n.symbols.length > 0
+    && typeof n.relevance === 'number'
+    && n.relevance > 0;
+  const news = allNews.filter(isMeaningful);
+  const suppressedCount = allNews.length - news.length;
 
   const summary = {
     total: news.length,
+    totalRaw: allNews.length,            // pre-filter count for debugging
+    suppressedUnanalyzed: suppressedCount,
     analyzed: news.filter(n => n.isAnalyzed).length,
     byImpact: {
       HIGH: news.filter(n => n.impact === 'HIGH').length,
