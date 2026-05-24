@@ -1,0 +1,11 @@
+{
+  "_meta": {
+    "schema": "Each speaker entry must have: name (string), title (string), date (ISO YYYY-MM-DD), stance ('hawkish' | 'dovish' | 'neutral'), verified (ISO timestamp when last cross-checked), verifiedSource (URL of firm's published calendar entry).",
+    "purpose": "Drives the Fed Speaker section of the home page breaking-news ticker. Loaded by backend/services/dashboardBuilder.js buildFedWatch(). Speakers whose date is in the past are auto-filtered out; if NONE remain, the ticker's Fed Speaker section is hidden entirely (no stale entries shown).",
+    "verificationSource": "https://www.federalreserve.gov/newsevents.htm",
+    "verificationCadence": "90-day rolling. See FED_SPEAKERS_VERIFICATION_TODO.md at repo root.",
+    "launchNote": "Shipped empty per spec (Fix 4a) - user populates from federalreserve.gov when ready. An empty array is the correct fail-safe behavior: no Fed speaker section renders until at least one verified future-dated entry exists.",
+    "lastUpdated": "2026-05-24"
+  },
+  "speakers": []
+}

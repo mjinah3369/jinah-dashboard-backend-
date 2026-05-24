@@ -4,6 +4,40 @@ import { calculateBias, calculateDXYStrength } from './yahooFinance.js';
 import { analyzeFredConditions } from './fred.js';
 import { getNewsForInstrument } from './finnhubNews.js';
 import { FOMC_MEETINGS } from './fundamentalReports.js';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// Fed speakers JSON path resolution (ES module __dirname equivalent).
+// Loaded lazily + safely - missing or malformed file degrades to empty list.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const FED_SPEAKERS_PATH = join(__dirname, '..', 'data', 'fedSpeakers.json');
+
+let _fedSpeakersCache = null;
+let _fedSpeakersCacheReadAt = 0;
+const FED_SPEAKERS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — rule data changes rarely
+
+function loadFedSpeakers() {
+  // Fix 4a: read from backend/data/fedSpeakers.json instead of the prior
+  // hardcoded list. JSON has 1-hour in-memory cache; survives many requests
+  // without re-reading disk. On parse error / missing file, returns [] so
+  // the Fed speaker section silently hides rather than crashing.
+  const now = Date.now();
+  if (_fedSpeakersCache !== null && (now - _fedSpeakersCacheReadAt) < FED_SPEAKERS_CACHE_TTL_MS) {
+    return _fedSpeakersCache;
+  }
+  try {
+    const raw = readFileSync(FED_SPEAKERS_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    _fedSpeakersCache = Array.isArray(parsed?.speakers) ? parsed.speakers : [];
+  } catch (err) {
+    console.warn('[fedSpeakers] could not load JSON, defaulting to empty:', err.message);
+    _fedSpeakersCache = [];
+  }
+  _fedSpeakersCacheReadAt = now;
+  return _fedSpeakersCache;
+}
 
 // Symbol keywords for matching news to instruments
 const NEWS_SYMBOL_KEYWORDS = {
@@ -1336,13 +1370,11 @@ function buildFedWatch() {
         countdown: 'TBD'
       };
 
-  // Fed speakers (sample data - should be updated with real calendar)
-  const fedSpeakers = [
-    { name: 'Powell', title: 'Chair', date: '2025-02-11', stance: 'hawkish' },
-    { name: 'Waller', title: 'Governor', date: '2025-02-13', stance: 'hawkish' },
-    { name: 'Bostic', title: 'Atlanta Fed', date: '2025-02-14', stance: 'dovish' },
-    { name: 'Barkin', title: 'Richmond Fed', date: '2025-02-18', stance: 'hawkish' }
-  ];
+  // Fix 4a: Fed speakers loaded from backend/data/fedSpeakers.json instead of
+  // the prior hardcoded list (which had stale Feb 2025 dates and was
+  // silently filtering down to nothing in production). Empty list -> no
+  // section renders in the ticker. See FED_SPEAKERS_VERIFICATION_TODO.md.
+  const fedSpeakers = loadFedSpeakers();
 
   // Rate expectations (mock - in real app, fetch from CME FedWatch)
   const rateExpectations = {
@@ -1410,8 +1442,11 @@ function buildTickerContent(news, macroEvents, fedWatch) {
     });
   });
 
-  // Add Fed speaker info
-  if (fedWatch.upcomingSpeakers && fedWatch.upcomingSpeakers.length > 0) {
+  // Fix 4a: only render Fed speaker section when at least one future-dated
+  // entry exists in fedSpeakers.json. fedWatch.upcomingSpeakers was already
+  // filtered to `date > now` in buildFedWatch(); an empty array correctly
+  // hides the section here (no stale entries shown).
+  if (Array.isArray(fedWatch.upcomingSpeakers) && fedWatch.upcomingSpeakers.length > 0) {
     const nextSpeaker = fedWatch.upcomingSpeakers[0];
     items.push({
       type: 'fed',
