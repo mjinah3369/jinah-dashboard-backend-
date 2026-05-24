@@ -2155,16 +2155,46 @@ dashboardRefreshTimer = setInterval(
 );
 
 // ============================================================================
-// SESSION BRIEF BACKGROUND PRE-WARM (Fix 2)
+// SESSION BRIEF BACKGROUND PRE-WARM (Fix 2 v2)
 // ============================================================================
 // Mirrors the dashboard pre-warm above. Without it, the first user after
 // each 5-min cache expiry triggers a cold Claude call and sees the "AI
 // analysis loading..." placeholder for several seconds (or forever if the
-// LLM call fails). Pre-warming every 4 min keeps the cache fresh AND
-// surfaces credit/network failures here in the logs before they reach a
-// real user.
+// LLM call fails).
+//
+// v2 safety patches (after v1 caused a production outage 2026-05-24 —
+// Render request-timeout cascade from a hung analyzeAllSourcesNews call
+// competing with the dashboard pre-warm at startup):
+//
+//   1. BOOT_PREWARM_DELAY_MS = 30s. The first run is deferred so the
+//      dashboard pre-warm settles before we add more I/O concurrency.
+//   2. The pre-warm does NOT fetch news. It reads whatever is already
+//      cached by analyzeAllSourcesNews (populated by the dashboard
+//      pre-warm a few seconds earlier). If empty, brief generates from
+//      session metadata only and rule-based fallback fills in.
+//   3. The Claude call itself has a 15-second Promise.race timeout inside
+//      getQuickSessionBrief (services/aiAgents.js) so the pre-warm cannot
+//      hang even in pathological cases.
 const BRIEF_REFRESH_INTERVAL = 4 * 60 * 1000;
+const BOOT_PREWARM_DELAY_MS = 30 * 1000;
 let briefRefreshTimer = null;
+let briefBootTimeout = null;
+
+/**
+ * Returns whatever analyzeAllSourcesNews has cached, with a hard 5-second
+ * cap so the pre-warm can NEVER hang on the news layer. lastHours=0 means
+ * "don't fetch fresh, use whatever's cached if fresh".
+ */
+async function getCachedAnalyzedNewsOrEmpty() {
+  try {
+    return await Promise.race([
+      analyzeAllSourcesNews({ lastHours: 0 }),
+      new Promise(resolve => setTimeout(() => resolve([]), 5000)),
+    ]);
+  } catch {
+    return [];
+  }
+}
 
 async function runBriefPrewarm(label) {
   return prewarmSessionBrief({
@@ -2173,7 +2203,7 @@ async function runBriefPrewarm(label) {
       current: getCurrentSession(),
       next: getNextSession(),
     }),
-    getNews: () => analyzeAllSourcesNews({ lastHours: 1 }),
+    getNews: () => getCachedAnalyzedNewsOrEmpty(),  // v2: cache-only, no upstream fetch
   }).catch(err => {
     // prewarmSessionBrief already logs - swallow here so the interval never throws.
     console.error(`[brief-prewarm:${label}] unexpected:`, err.message);
@@ -2181,8 +2211,11 @@ async function runBriefPrewarm(label) {
   });
 }
 
-// Kick off initial fetch on boot
-runBriefPrewarm('boot').catch(() => {});
+// Boot pre-warm DELAYED so it doesn't race with dashboard pre-warm at startup.
+briefBootTimeout = setTimeout(
+  () => { runBriefPrewarm('boot').catch(() => {}); },
+  BOOT_PREWARM_DELAY_MS
+);
 
 briefRefreshTimer = setInterval(
   () => { runBriefPrewarm('interval').catch(() => {}); },
@@ -2204,6 +2237,7 @@ function shutdown(signal) {
   console.log(`Received ${signal}, shutting down...`);
   if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
   if (briefRefreshTimer) clearInterval(briefRefreshTimer);
+  if (briefBootTimeout) clearTimeout(briefBootTimeout);
   process.exit(0);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

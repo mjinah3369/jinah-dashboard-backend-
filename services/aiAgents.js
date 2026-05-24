@@ -905,11 +905,23 @@ Respond in JSON format ONLY:
 }`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
-      messages: [{ role: 'user', content: prompt }]
-    });
+    // Fix 2 v2: 15-second Promise.race timeout. Yesterday's outage was
+    // caused by an Anthropic call that hung indefinitely instead of failing
+    // fast, leaving the boot pre-warm pending forever and cascading into a
+    // Render health-check failure. This race ensures we ALWAYS resolve in
+    // <=15s, either with a real response or with a controlled timeout that
+    // routes to buildSessionBriefFallback.
+    const LLM_TIMEOUT_MS = 15_000;
+    const response = await Promise.race([
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`llm_timeout_${LLM_TIMEOUT_MS}ms`)), LLM_TIMEOUT_MS)
+      ),
+    ]);
 
     const text = response.content[0].text;
     const jsonMatch = text.match(/\{[\s\S]*\}/);
