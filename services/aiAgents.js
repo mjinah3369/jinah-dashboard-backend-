@@ -33,6 +33,31 @@ const agentCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
 // ============================================================================
+// SESSION BRIEF CACHE (Fix 2)
+// ============================================================================
+// Separate from agentCache because the previous bucket-rotation key
+// (`brief_${sessionKey}_${Math.floor(Date.now() / CACHE_TTL)}`) made
+// background pre-warm awkward — the cache key flipped every 5 min, so a
+// pre-warm at minute 4:30 of bucket N still left bucket N+1 empty.
+//
+// This cache uses a stable key per session + an explicit timestamp so a
+// background pre-warm can simply overwrite the entry and the first user
+// after expiry never triggers a cold LLM call.
+const briefCache = new Map();   // sessionKey -> { value, timestamp }
+const BRIEF_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getBriefFromCache(sessionKey) {
+  const entry = briefCache.get(sessionKey);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > BRIEF_TTL) return null;
+  return entry.value;
+}
+
+function setBriefCache(sessionKey, value) {
+  briefCache.set(sessionKey, { value, timestamp: Date.now() });
+}
+
+// ============================================================================
 // FUNDAMENTAL REPORTS HELPER - Formats report calendar for AI prompts
 // ============================================================================
 
@@ -780,11 +805,87 @@ async function runFullAnalysis(data) {
 }
 
 /**
- * Quick session brief (lighter weight, faster)
+ * Build a rule-based session brief when the LLM is unavailable.
+ *
+ * Per AI_CONTENT_AUDIT.md issue #1 + Fix 2: the previous fallback was the
+ * string "Analysis unavailable" which the frontend rendered as an eternal
+ * "loading..." state. This fallback returns the same JSON shape as the LLM
+ * version with deterministic, useful content — so the frontend can render a
+ * real brief with an "Auto-generated summary — AI synthesis unavailable"
+ * disclaimer instead of a broken loading state.
+ */
+function buildSessionBriefFallback(sessionInfo, newsData, reason) {
+  const cur = sessionInfo?.current || {};
+  const sessName = cur.name || 'Current';
+  const desc = cur.description || '';
+  const isIB = !!cur.isIB;
+  const ibMin = cur.ibMinutesRemaining;
+  const focus = Array.isArray(cur.focus) && cur.focus.length > 0 ? cur.focus : ['ES', 'NQ'];
+
+  // Pull HIGH-impact news headlines that survived the Fix 4b suppression filter.
+  const highImpactNews = (newsData || []).filter(n =>
+    n && n.impact === 'HIGH'
+    && !n.analysisUnavailable
+    && Array.isArray(n.symbols) && n.symbols.length > 0
+  );
+  const topHigh = highImpactNews[0]?.headline || highImpactNews[0]?.title;
+
+  // Brief sentence
+  let brief = `${sessName} session in progress.`;
+  if (desc) brief += ` ${desc}.`;
+  if (isIB && typeof ibMin === 'number') brief += ` Initial Balance active for ${ibMin} more minutes.`;
+  else if (isIB) brief += ' Initial Balance active.';
+  brief += ` Focus instruments: ${focus.join(', ')}.`;
+
+  // Caution
+  let caution;
+  if (topHigh) {
+    caution = `Watch: ${topHigh}`;
+  } else {
+    const lower = sessName.toLowerCase();
+    if (lower.includes('asia')) caution = 'Thin liquidity typical in Asia hours — expect wider spreads.';
+    else if (lower.includes('london')) caution = 'London open often sets directional tone; watch DXY and treasury reaction.';
+    else if (lower.includes('us') || lower.includes('new york')) caution = 'US open typically expands range — wait for IB to complete before sizing up.';
+    else caution = 'Standard session caution — confirm direction against macro data.';
+  }
+
+  // Opportunity
+  const opportunity = focus.length > 1
+    ? `${focus[0]} / ${focus[1]} likely to lead any directional move this session.`
+    : `${focus[0]} likely to lead any directional move this session.`;
+
+  return {
+    brief,
+    focus,
+    caution,
+    opportunity,
+    generated: false,
+    fallbackReason: reason,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Quick session brief (lighter weight, faster).
+ *
+ * Two-tier per Fix 2 / Gap 1 decision:
+ *   1. Live Claude call (tagged generated: true)
+ *   2. Rule-based fallback labeled "Auto-generated summary — AI synthesis
+ *      unavailable" (tagged generated: false, fallbackReason set)
+ *
+ * The "yesterday's brief" persistence tier was explicitly skipped — stale
+ * brief framed as current is the same credibility problem this is fixing.
+ *
+ * Cache: stable key per session + explicit timestamp so a background
+ * pre-warm (see prewarmSessionBrief) can simply overwrite the entry. The
+ * fallback IS cached too, so a flapping LLM doesn't trigger per-request
+ * retry storms — the next pre-warm cycle will retry and either succeed
+ * or refresh the fallback.
  */
 async function getQuickSessionBrief(sessionInfo, newsData) {
-  const cacheKey = `brief_${sessionInfo.current?.key}_${Math.floor(Date.now() / CACHE_TTL)}`;
-  if (agentCache.has(cacheKey)) return agentCache.get(cacheKey);
+  const sessionKey = sessionInfo?.current?.key || 'unknown';
+  const cached = getBriefFromCache(sessionKey);
+  if (cached) return cached;
 
   const topNews = (newsData || []).slice(0, 5).map(n => n.headline || n.title).join('; ');
 
@@ -804,22 +905,105 @@ Respond in JSON format ONLY:
 }`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
-      messages: [{ role: 'user', content: prompt }]
-    });
+    // Fix 2 v2: 15-second Promise.race timeout. Yesterday's outage was
+    // caused by an Anthropic call that hung indefinitely instead of failing
+    // fast, leaving the boot pre-warm pending forever and cascading into a
+    // Render health-check failure. This race ensures we ALWAYS resolve in
+    // <=15s, either with a real response or with a controlled timeout that
+    // routes to buildSessionBriefFallback.
+    const LLM_TIMEOUT_MS = 15_000;
+    const response = await Promise.race([
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`llm_timeout_${LLM_TIMEOUT_MS}ms`)), LLM_TIMEOUT_MS)
+      ),
+    ]);
 
     const text = response.content[0].text;
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const result = jsonMatch ? JSON.parse(jsonMatch[0]) : { brief: 'Analysis unavailable' };
+    if (!jsonMatch) {
+      const fallback = buildSessionBriefFallback(sessionInfo, newsData, 'json_extract_failed');
+      setBriefCache(sessionKey, fallback);
+      return fallback;
+    }
 
-    agentCache.set(cacheKey, result);
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      const fallback = buildSessionBriefFallback(sessionInfo, newsData, `json_parse_error: ${e.message}`);
+      setBriefCache(sessionKey, fallback);
+      return fallback;
+    }
+
+    const result = {
+      ...parsed,
+      generated: true,
+      fallbackReason: null,
+      generatedAt: new Date().toISOString(),
+    };
+    setBriefCache(sessionKey, result);
     return result;
   } catch (error) {
     console.error('Quick brief error:', error.message);
-    return { brief: 'Analysis unavailable', error: error.message };
+    const fallback = buildSessionBriefFallback(sessionInfo, newsData, `llm_call_error: ${error.message}`);
+    setBriefCache(sessionKey, fallback);
+    return fallback;
   }
+}
+
+/**
+ * Background pre-warm helper for Session Brief. Called by server.js on a
+ * setInterval just under the cache TTL so the first user after expiry never
+ * triggers a cold LLM call (same pattern as the dashboard pre-warm built
+ * during the OOM crash fix).
+ *
+ * Takes async-resolved session + news fetchers as dependencies so we don't
+ * create a circular import between aiAgents.js and sessionEngine.js /
+ * newsAnalysis.js.
+ */
+async function prewarmSessionBrief({ getSession, getNews, label = 'interval' } = {}) {
+  if (typeof getSession !== 'function') {
+    throw new Error('prewarmSessionBrief: getSession must be a function');
+  }
+  try {
+    const sessionInfo = await getSession();
+    let newsData = [];
+    if (typeof getNews === 'function') {
+      try {
+        newsData = await getNews();
+      } catch (e) {
+        console.warn(`[brief-prewarm:${label}] news fetch failed:`, e.message);
+      }
+    }
+    const result = await getQuickSessionBrief(sessionInfo, newsData);
+    console.log(`[brief-prewarm:${label}] ok (generated=${result.generated})`);
+    return result;
+  } catch (err) {
+    console.error(`[brief-prewarm:${label}] failed:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Get the session-brief cache status (for diagnostic endpoints).
+ */
+function getSessionBriefStatus() {
+  const entries = Array.from(briefCache.entries()).map(([key, { value, timestamp }]) => ({
+    sessionKey: key,
+    ageMs: Date.now() - timestamp,
+    generated: value.generated,
+    fallbackReason: value.fallbackReason || null,
+  }));
+  return {
+    cacheSize: briefCache.size,
+    ttlMs: BRIEF_TTL,
+    entries,
+  };
 }
 
 /**
@@ -827,7 +1011,8 @@ Respond in JSON format ONLY:
  */
 function clearCache() {
   agentCache.clear();
-  console.log('AI agent cache cleared');
+  briefCache.clear();
+  console.log('AI agent cache cleared (including session-brief cache)');
 }
 
 /**
@@ -848,6 +1033,8 @@ export {
   masterOrchestrator,
   runFullAnalysis,
   getQuickSessionBrief,
+  prewarmSessionBrief,        // Fix 2: background pre-warm
+  getSessionBriefStatus,      // Fix 2: diagnostic
   clearCache,
   getCacheStatus,
   // Keyword tagging utilities

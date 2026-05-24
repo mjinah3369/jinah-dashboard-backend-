@@ -69,6 +69,8 @@ import {
 import {
   runFullAnalysis,
   getQuickSessionBrief,
+  prewarmSessionBrief,
+  getSessionBriefStatus,
   clearCache as clearAICache,
   getCacheStatus as getAICacheStatus
 } from './services/aiAgents.js';
@@ -2152,10 +2154,90 @@ dashboardRefreshTimer = setInterval(
   DASHBOARD_REFRESH_INTERVAL
 );
 
+// ============================================================================
+// SESSION BRIEF BACKGROUND PRE-WARM (Fix 2 v2)
+// ============================================================================
+// Mirrors the dashboard pre-warm above. Without it, the first user after
+// each 5-min cache expiry triggers a cold Claude call and sees the "AI
+// analysis loading..." placeholder for several seconds (or forever if the
+// LLM call fails).
+//
+// v2 safety patches (after v1 caused a production outage 2026-05-24 —
+// Render request-timeout cascade from a hung analyzeAllSourcesNews call
+// competing with the dashboard pre-warm at startup):
+//
+//   1. BOOT_PREWARM_DELAY_MS = 30s. The first run is deferred so the
+//      dashboard pre-warm settles before we add more I/O concurrency.
+//   2. The pre-warm does NOT fetch news. It reads whatever is already
+//      cached by analyzeAllSourcesNews (populated by the dashboard
+//      pre-warm a few seconds earlier). If empty, brief generates from
+//      session metadata only and rule-based fallback fills in.
+//   3. The Claude call itself has a 15-second Promise.race timeout inside
+//      getQuickSessionBrief (services/aiAgents.js) so the pre-warm cannot
+//      hang even in pathological cases.
+const BRIEF_REFRESH_INTERVAL = 4 * 60 * 1000;
+const BOOT_PREWARM_DELAY_MS = 30 * 1000;
+let briefRefreshTimer = null;
+let briefBootTimeout = null;
+
+/**
+ * Returns whatever analyzeAllSourcesNews has cached, with a hard 5-second
+ * cap so the pre-warm can NEVER hang on the news layer. lastHours=0 means
+ * "don't fetch fresh, use whatever's cached if fresh".
+ */
+async function getCachedAnalyzedNewsOrEmpty() {
+  try {
+    return await Promise.race([
+      analyzeAllSourcesNews({ lastHours: 0 }),
+      new Promise(resolve => setTimeout(() => resolve([]), 5000)),
+    ]);
+  } catch {
+    return [];
+  }
+}
+
+async function runBriefPrewarm(label) {
+  return prewarmSessionBrief({
+    label,
+    getSession: () => Promise.resolve({
+      current: getCurrentSession(),
+      next: getNextSession(),
+    }),
+    getNews: () => getCachedAnalyzedNewsOrEmpty(),  // v2: cache-only, no upstream fetch
+  }).catch(err => {
+    // prewarmSessionBrief already logs - swallow here so the interval never throws.
+    console.error(`[brief-prewarm:${label}] unexpected:`, err.message);
+    return null;
+  });
+}
+
+// Boot pre-warm DELAYED so it doesn't race with dashboard pre-warm at startup.
+briefBootTimeout = setTimeout(
+  () => { runBriefPrewarm('boot').catch(() => {}); },
+  BOOT_PREWARM_DELAY_MS
+);
+
+briefRefreshTimer = setInterval(
+  () => { runBriefPrewarm('interval').catch(() => {}); },
+  BRIEF_REFRESH_INTERVAL
+);
+
+// Diagnostic endpoint: lets ops see whether the session brief is currently
+// AI-generated or fallback-rendered without opening the UI.
+app.get('/api/analysis/brief/status', (_req, res) => {
+  try {
+    res.json(getSessionBriefStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Clean shutdown so Render doesn't get stray timers during deploys
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down...`);
   if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
+  if (briefRefreshTimer) clearInterval(briefRefreshTimer);
+  if (briefBootTimeout) clearTimeout(briefBootTimeout);
   process.exit(0);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
