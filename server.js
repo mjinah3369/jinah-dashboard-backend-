@@ -69,6 +69,8 @@ import {
 import {
   runFullAnalysis,
   getQuickSessionBrief,
+  prewarmSessionBrief,
+  getSessionBriefStatus,
   clearCache as clearAICache,
   getCacheStatus as getAICacheStatus
 } from './services/aiAgents.js';
@@ -2152,10 +2154,56 @@ dashboardRefreshTimer = setInterval(
   DASHBOARD_REFRESH_INTERVAL
 );
 
+// ============================================================================
+// SESSION BRIEF BACKGROUND PRE-WARM (Fix 2)
+// ============================================================================
+// Mirrors the dashboard pre-warm above. Without it, the first user after
+// each 5-min cache expiry triggers a cold Claude call and sees the "AI
+// analysis loading..." placeholder for several seconds (or forever if the
+// LLM call fails). Pre-warming every 4 min keeps the cache fresh AND
+// surfaces credit/network failures here in the logs before they reach a
+// real user.
+const BRIEF_REFRESH_INTERVAL = 4 * 60 * 1000;
+let briefRefreshTimer = null;
+
+async function runBriefPrewarm(label) {
+  return prewarmSessionBrief({
+    label,
+    getSession: () => Promise.resolve({
+      current: getCurrentSession(),
+      next: getNextSession(),
+    }),
+    getNews: () => analyzeAllSourcesNews({ lastHours: 1 }),
+  }).catch(err => {
+    // prewarmSessionBrief already logs - swallow here so the interval never throws.
+    console.error(`[brief-prewarm:${label}] unexpected:`, err.message);
+    return null;
+  });
+}
+
+// Kick off initial fetch on boot
+runBriefPrewarm('boot').catch(() => {});
+
+briefRefreshTimer = setInterval(
+  () => { runBriefPrewarm('interval').catch(() => {}); },
+  BRIEF_REFRESH_INTERVAL
+);
+
+// Diagnostic endpoint: lets ops see whether the session brief is currently
+// AI-generated or fallback-rendered without opening the UI.
+app.get('/api/analysis/brief/status', (_req, res) => {
+  try {
+    res.json(getSessionBriefStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Clean shutdown so Render doesn't get stray timers during deploys
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down...`);
   if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
+  if (briefRefreshTimer) clearInterval(briefRefreshTimer);
   process.exit(0);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
