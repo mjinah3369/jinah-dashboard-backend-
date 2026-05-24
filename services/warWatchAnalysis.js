@@ -635,19 +635,16 @@ You MUST respond with valid JSON only. No markdown, no text outside the JSON. Re
     {
       "symbol": "CL",
       "direction": "LONG or SHORT",
-      "reason": "One line why — tie to the war event",
-      "entry": "How to enter (e.g. 'Buy dips near session low' or 'Sell rallies into resistance')",
-      "target": "Expected move in $ or points",
-      "stopLogic": "Where to stop and why"
+      "reason": "One line why — tie to the war event (NO specific entry, target, or stop levels — you do not have live price data and any specific level would be a guess)"
     }
   ],
-  "technicals": "1-2 sentences on which timeframe and indicators matter for this event type",
+  "technicals": "1-2 sentences on which timeframe and indicators matter for this event type — speak in general terms only, do not invent specific price levels",
   "risk": "1-2 sentences on de-escalation risk — what flips the bias",
-  "actionVerdict": "One final sentence: the single most important action a trader should take RIGHT NOW"
+  "actionVerdict": "One final sentence: the single most important action a trader should take RIGHT NOW (general direction only — no specific entry/target/stop)"
 }
 
 Rules:
-- topPicks: include the top 2-3 instruments only (the clearest setups)
+- topPicks: include the top 2-3 instruments only (the clearest directional reads). Each entry is just symbol + direction + reason. DO NOT include entry, target, or stopLogic fields — you do not have live price levels and any specific number would be ungrounded.
 - keyStatements: include 2-4 statements from officials (Trump, Iran, Gulf, Israel etc). If none, use empty array
 - Use instrument symbols (CL, GC, ES, NQ, 6J, DX etc)
 - Be direct, professional. No disclaimers.
@@ -685,6 +682,17 @@ Rules:
     }
 
     if (parsed) {
+      // Fix 1: defensively strip entry/target/stopLogic if the LLM included
+      // them despite the explicit instruction not to. These fields are
+      // ungrounded (we don't pass live price levels) and were the audit's
+      // #1 credibility risk on the geopolitical card.
+      if (Array.isArray(parsed.topPicks)) {
+        parsed.topPicks = parsed.topPicks.map(p => {
+          if (!p || typeof p !== 'object') return p;
+          const { entry, target, stopLogic, ...rest } = p; // eslint-disable-line no-unused-vars
+          return rest;
+        });
+      }
       return {
         ...parsed,
         generated: true,
@@ -726,13 +734,12 @@ function buildFallbackWarBrief(warData, top5, eventType) {
       risk.tradingImplication
     ],
     keyStatements: [],
+    // Fix 1: fallback shape matches the new prompt — symbol + direction + reason only.
+    // No entry/target/stop (ungrounded; see AI_CONTENT_AUDIT.md issue #5).
     topPicks: top5.slice(0, 3).map(inst => ({
       symbol: inst.instrument,
       direction: inst.warBias === 'BULLISH' ? 'LONG' : 'SHORT',
-      reason: inst.warReason,
-      entry: 'Monitor for headline-driven entries',
-      target: 'See expected move data',
-      stopLogic: 'Use session high/low as stop reference'
+      reason: inst.warReason
     })),
     technicals: `Event type ${eventType.replace(/_/g, ' ')} — use primary timeframe for momentum entries`,
     risk: 'Monitor for de-escalation headlines that would flip bias',
