@@ -467,7 +467,7 @@ export const DASHBOARD_SYSTEM_KNOWLEDGE = {
 - Real-time TradingView integration via Pine Script webhooks`,
 
   dataFlow: {
-    description: 'Data flows from external APIs → Backend services → AI analysis → Frontend display',
+    description: 'Data flows from external APIs → Backend services → AI analysis (where applicable) and rule-based scoring (elsewhere) → Frontend display',
     sources: {
       'Yahoo Finance': 'FREE — Provides 15-min delayed prices for futures (ES, NQ, CL, GC, etc.), ETFs (XLK, HYG, TLT), stocks (Mag7), currencies, and international indices. This is the primary price data source.',
       'Finnhub': 'FREE tier (60 calls/min) — Market news headlines, earnings calendar, economic calendar, company-specific news for Mag7.',
@@ -496,7 +496,7 @@ export const DASHBOARD_SYSTEM_KNOWLEDGE = {
     weatherSection: 'Agricultural impact analysis with drought monitor, temperature/precipitation outlooks, and commodity-specific impact assessments.',
     newsAnalysis: 'AI-analyzed news page with impact/bias badges, symbol tags, filtering, and search.',
     sessionControlCenter: 'Shows current trading session (Asia/London/US), IB countdown, session levels, and next session info.',
-    dailyBrief: 'AI-generated "What to Look For Today" analysis combining all data sources into actionable trading intelligence.',
+    dailyBrief: '"What to Look For Today" analysis combining all data sources into actionable trading intelligence. AI-generated when Claude is available; rule-based summary as fallback when the LLM call fails or credits are exhausted.',
     esCommandCenter: 'ES-specific analysis with drivers, correlations, institutional context (credit spreads, gap analysis, OPEX, seasonality), and Mag7 impact.'
   },
 
