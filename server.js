@@ -121,6 +121,7 @@ import {
   clearFinalAnalysisCache,
   getFinalAnalysisCacheStatus
 } from './services/finalAnalysis.js';
+import { registerAdminVpRoutes } from './services/adminVP.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -2086,6 +2087,13 @@ app.post('/api/warwatch/analysis/refresh', (req, res) => {
   res.json({ message: 'WarWatch analysis and data cache cleared.' });
 });
 
+// ---- v1.1 Step 1 — Admin VP entry routes ----
+// POST /api/admin/vp/:token   — submit 6-instrument VP entries (token + password)
+// GET  /api/admin/vp/:token   — read entries (token only); query params date, instrument
+// Env vars required: ADMIN_VP_URL_TOKEN, ADMIN_VP_PASSWORD,
+//                    SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+registerAdminVpRoutes(app);
+
 // WarWatch SSE broadcast interval — push updates to all connected clients every 3 minutes
 setInterval(async () => {
   if (warWatchPollingClients.length === 0) return;
@@ -2258,4 +2266,5 @@ app.listen(PORT, () => {
   console.log(`WarWatch Alerts: http://localhost:${PORT}/api/warwatch/alerts`);
   console.log(`WarWatch Live Stream: http://localhost:${PORT}/api/warwatch/stream`);
   console.log(`WarWatch AI Analysis: http://localhost:${PORT}/api/warwatch/analysis`);
+  console.log(`Admin VP entry: http://localhost:${PORT}/api/admin/vp/:token`);
 });
