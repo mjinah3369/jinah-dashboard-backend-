@@ -670,21 +670,34 @@ async function getChartData(symbol, interval = '1d') {
       }
     }
 
-    // Calculate EMAs for overlay (13 and 21 for day trading)
+    // Calculate EMAs for overlay.
+    // 13 and 21 are kept for backward compatibility (day-trading day chart).
+    // 9, 21, 55 are the v1.1 spec triple shown on the per-instrument detail
+    // page chart (using the open-source Lightweight Charts library).
     const closes = candles.map(c => c.close);
+    const ema9Values = calculateEMAArray(closes, 9);
     const ema13Values = calculateEMAArray(closes, 13);
     const ema21Values = calculateEMAArray(closes, 21);
+    const ema55Values = calculateEMAArray(closes, 55);
 
-    // Add EMA data points
+    // Add EMA data points (Lightweight-Charts-friendly {time, value} shape)
+    const ema9Data = [];
     const ema13Data = [];
     const ema21Data = [];
+    const ema55Data = [];
 
     for (let i = 0; i < candles.length; i++) {
+      if (ema9Values[i] !== null) {
+        ema9Data.push({ time: candles[i].time, value: ema9Values[i] });
+      }
       if (ema13Values[i] !== null) {
         ema13Data.push({ time: candles[i].time, value: ema13Values[i] });
       }
       if (ema21Values[i] !== null) {
         ema21Data.push({ time: candles[i].time, value: ema21Values[i] });
+      }
+      if (ema55Values[i] !== null) {
+        ema55Data.push({ time: candles[i].time, value: ema55Values[i] });
       }
     }
 
@@ -706,8 +719,12 @@ async function getChartData(symbol, interval = '1d') {
       interval: config.interval,
       intervalLabel: config.label,
       candles,
-      ema13: ema13Data,
+      // v1.1 spec triple (9 / 21 / 55) for the per-instrument detail page chart
+      ema9: ema9Data,
       ema21: ema21Data,
+      ema55: ema55Data,
+      // Kept for backward compatibility with the day-trading popup chart
+      ema13: ema13Data,
       atr: atrData,
       lastUpdate: new Date().toISOString()
     };
