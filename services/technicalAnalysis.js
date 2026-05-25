@@ -658,14 +658,25 @@ async function getChartData(symbol, interval = '1d') {
 
     // Build candle data for chart
     const candles = [];
+    const volumes = [];
     for (let i = 0; i < timestamps.length; i++) {
       if (quote.open?.[i] && quote.high?.[i] && quote.low?.[i] && quote.close?.[i]) {
+        const close = parseFloat(quote.close[i].toFixed(2));
+        const open = parseFloat(quote.open[i].toFixed(2));
         candles.push({
           time: timestamps[i], // Unix timestamp
-          open: parseFloat(quote.open[i].toFixed(2)),
+          open,
           high: parseFloat(quote.high[i].toFixed(2)),
           low: parseFloat(quote.low[i].toFixed(2)),
-          close: parseFloat(quote.close[i].toFixed(2))
+          close
+        });
+        // Volume histogram entry, color-coded by candle direction
+        // (matches the typical futures dashboard convention)
+        const vol = Number.isFinite(quote.volume?.[i]) ? quote.volume[i] : 0;
+        volumes.push({
+          time: timestamps[i],
+          value: vol,
+          color: close >= open ? '#10b98180' : '#ef444480' // green/red with 50% alpha
         });
       }
     }
@@ -719,6 +730,9 @@ async function getChartData(symbol, interval = '1d') {
       interval: config.interval,
       intervalLabel: config.label,
       candles,
+      // Volume histogram entries, color-coded green/red by candle direction.
+      // Lightweight Charts HistogramSeries-compatible shape.
+      volume: volumes,
       // v1.1 spec triple (9 / 21 / 55) for the per-instrument detail page chart
       ema9: ema9Data,
       ema21: ema21Data,
