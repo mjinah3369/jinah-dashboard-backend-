@@ -1181,5 +1181,9 @@ export {
   getBiasBreakdown,
   detectDrivers,
   calculateNetBias,
-  getESNews
+  getESNews,
+  // v1.1 Step 3: exposed so /api/instrument/ES/detail can surface the
+  // institutional layer (VIX structure, credit, gap, OPEX, seasonality,
+  // COT) that was previously only visible on the ES Command Center tab.
+  getInstitutionalContext
 };
