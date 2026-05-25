@@ -122,6 +122,7 @@ import {
   getFinalAnalysisCacheStatus
 } from './services/finalAnalysis.js';
 import { registerAdminVpRoutes } from './services/adminVP.js';
+import { getInstrumentDetail } from './services/instrumentDetail.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -707,6 +708,29 @@ app.get('/api/instrument/:symbol', async (req, res) => {
     console.error(`Instrument summary error for ${req.params.symbol}:`, error);
     res.status(500).json({
       error: 'Failed to generate instrument summary',
+      message: error.message
+    });
+  }
+});
+
+// v1.1 Step 3: per-instrument detail page payload.
+// MA brief (9/21/55 EMAs × Daily/Hourly/15-min) + technical details +
+// fundamental context. ES variant additionally returns institutional_context
+// (NET BIAS, factor breakdown, COT, OPEX, Gap, Seasonality, correlations).
+// Supported: ES, NQ, RTY, YM, CL, GC.
+app.get('/api/instrument/:symbol/detail', async (req, res) => {
+  try {
+    const symbol = req.params.symbol?.toUpperCase();
+    const detail = await getInstrumentDetail(symbol);
+    if (detail.error) {
+      const status = detail.error === 'unsupported_symbol' ? 400 : 500;
+      return res.status(status).json(detail);
+    }
+    return res.json(detail);
+  } catch (error) {
+    console.error(`Instrument detail error for ${req.params.symbol}:`, error);
+    return res.status(500).json({
+      error: 'detail_generation_failed',
       message: error.message
     });
   }
@@ -2267,4 +2291,5 @@ app.listen(PORT, () => {
   console.log(`WarWatch Live Stream: http://localhost:${PORT}/api/warwatch/stream`);
   console.log(`WarWatch AI Analysis: http://localhost:${PORT}/api/warwatch/analysis`);
   console.log(`Admin VP entry: http://localhost:${PORT}/api/admin/vp/:token`);
+  console.log(`Instrument Detail: http://localhost:${PORT}/api/instrument/:symbol/detail`);
 });
