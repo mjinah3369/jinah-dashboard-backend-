@@ -1,22 +1,29 @@
 // Admin Volume Profile entry endpoint.
 // v1.1 Step 1 of the dashboard build.
 //
-// Auth: secret URL token in the URL (`/api/admin/vp/:token`) + password in the
-// request body for writes. Reads require only the URL token.
-// Rate limit: 10 requests per minute per IP on each route.
-// Abuse guard: 5 failed auth attempts within 10 minutes from the same IP
-// triggers a 1-hour ban on that IP.
+// Architecture (Lovable Cloud):
+//   The Render backend connects to Supabase with the *anon* key (service_role
+//   is not exposed by Lovable Cloud). Writes to admin-only tables go through
+//   the public.upsert_daily_vp_level RPC, which is SECURITY DEFINER and
+//   validates a shared secret stored in private.config. Render's
+//   ADMIN_VP_PASSWORD env var must match private.config.admin_vp_secret in
+//   Supabase. See LOVABLE_PROMPT_V1_1_01B_ADMIN_RPC.md.
 //
-// Writes to Supabase tables:
-//   - daily_vp_levels (upsert by (instrument_symbol, trading_date))
-//   - daily_vp_levels_audit (one row per insert/update)
+// Auth (Express layer):
+//   POST writes require the URL :token + a password in the request body.
+//   GET reads require only the URL :token.
+//   Express validates the password fast-fail (no DB hit on bad input). The
+//   same password is then forwarded to the RPC as the shared secret, which
+//   re-validates inside the database. Defense in depth.
+//
+// Rate limit: 10 requests per minute per IP per route.
+// Abuse guard: 5 failed auth attempts within 10 minutes from the same IP ->
+// 1-hour ban on that IP (in-memory; resets on restart, acceptable since this
+// is abuse mitigation not authentication).
 //
 // Required env vars:
 //   ADMIN_VP_URL_TOKEN, ADMIN_VP_PASSWORD,
-//   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-//
-// The Supabase service-role key bypasses RLS — required for the admin to
-// write reference data visible to all users.
+//   SUPABASE_URL, SUPABASE_ANON_KEY
 
 import { createClient } from '@supabase/supabase-js';
 import rateLimit from 'express-rate-limit';
@@ -34,9 +41,9 @@ let _supabase = null;
 function getSupabaseClient() {
   if (_supabase) return _supabase;
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const key = process.env.SUPABASE_ANON_KEY;
   if (!url || !key) {
-    throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
+    throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY must be set');
   }
   _supabase = createClient(url, key, { auth: { persistSession: false } });
   return _supabase;
@@ -122,7 +129,7 @@ function checkTokenAndPassword(req) {
       body: { error: 'admin_auth_failed', message: 'Invalid token or password' }
     };
   }
-  return { ok: true, ip: tokenCheck.ip };
+  return { ok: true, ip: tokenCheck.ip, password: supplied };
 }
 
 function validateEntry(entry) {
@@ -182,73 +189,34 @@ export async function handleAdminVpPost(req, res) {
 
   let inserted = 0;
   let updated = 0;
-  let auditRowsWritten = 0;
   const writeErrors = [];
 
   for (const entry of entries) {
     const { instrument_symbol, trading_date, vah, val, poc, notes } = entry;
 
-    const { data: existing, error: lookupErr } = await supabase
-      .from('daily_vp_levels')
-      .select('id, vah_price, val_price, poc_price')
-      .eq('instrument_symbol', instrument_symbol)
-      .eq('trading_date', trading_date)
-      .maybeSingle();
-
-    if (lookupErr) {
-      writeErrors.push({ instrument_symbol, trading_date, error: lookupErr.message });
-      continue;
-    }
-
-    const isUpdate = !!existing;
-    const oldValues = existing
-      ? { vah_price: existing.vah_price, val_price: existing.val_price, poc_price: existing.poc_price }
-      : null;
-
-    const { data: upserted, error: upsertErr } = await supabase
-      .from('daily_vp_levels')
-      .upsert(
-        {
-          instrument_symbol,
-          trading_date,
-          vah_price: vah,
-          val_price: val,
-          poc_price: poc,
-          entered_by: 'admin',
-          entered_at: new Date().toISOString(),
-          notes: notes ?? null
-        },
-        { onConflict: 'instrument_symbol,trading_date' }
-      )
-      .select('id')
-      .single();
-
-    if (upsertErr) {
-      writeErrors.push({ instrument_symbol, trading_date, error: upsertErr.message });
-      continue;
-    }
-
-    if (isUpdate) updated++;
-    else inserted++;
-
-    const { error: auditErr } = await supabase.from('daily_vp_levels_audit').insert({
-      daily_vp_levels_id: upserted.id,
-      instrument_symbol,
-      trading_date,
-      old_values: oldValues,
-      new_values: { vah_price: vah, val_price: val, poc_price: poc, notes: notes ?? null },
-      change_type: isUpdate ? 'update' : 'insert',
-      changed_at: new Date().toISOString(),
-      changed_by_ip: auth.ip
+    const { data, error: rpcErr } = await supabase.rpc('upsert_daily_vp_level', {
+      p_secret: auth.password,
+      p_instrument: instrument_symbol,
+      p_trading_date: trading_date,
+      p_vah: vah,
+      p_val: val,
+      p_poc: poc,
+      p_notes: notes ?? null,
+      p_changed_by_ip: auth.ip === 'unknown' ? null : auth.ip
     });
 
-    if (auditErr) {
-      console.error(
-        `[adminVP] audit row write failed for ${instrument_symbol} ${trading_date}: ${auditErr.message}`
-      );
-    } else {
-      auditRowsWritten++;
+    if (rpcErr) {
+      writeErrors.push({
+        instrument_symbol,
+        trading_date,
+        error: rpcErr.message
+      });
+      continue;
     }
+
+    // data is the jsonb returned from the RPC: { id, change_type }
+    if (data && data.change_type === 'update') updated++;
+    else if (data && data.change_type === 'insert') inserted++;
   }
 
   if (writeErrors.length > 0) {
@@ -256,7 +224,7 @@ export async function handleAdminVpPost(req, res) {
       partial: true,
       inserted,
       updated,
-      audit_rows_written: auditRowsWritten,
+      audit_rows_written: inserted + updated,
       errors: writeErrors
     });
   }
@@ -264,7 +232,7 @@ export async function handleAdminVpPost(req, res) {
   return res.status(200).json({
     inserted,
     updated,
-    audit_rows_written: auditRowsWritten
+    audit_rows_written: inserted + updated
   });
 }
 
@@ -292,6 +260,8 @@ export async function handleAdminVpGet(req, res) {
     return res.status(500).json({ error: 'misconfigured', message: err.message });
   }
 
+  // daily_vp_levels has an open SELECT policy (USING (true)), so anon-key read
+  // works directly without going through an RPC.
   let query = supabase
     .from('daily_vp_levels')
     .select('id, instrument_symbol, trading_date, vah_price, val_price, poc_price, entered_by, entered_at, notes')
