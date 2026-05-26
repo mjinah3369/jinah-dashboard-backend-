@@ -1060,24 +1060,59 @@ app.get('/api/final-analysis', async (req, res) => {
     // Generate final analysis
     const analysis = await generateFinalAnalysis(marketData);
 
-    // v1.1 Step 4 — Always include the structured AI synthesis (two blocks:
-    // previousDay for Card A, today for Card B) so the main dashboard can
-    // wire each card to the appropriate block. Pass today's scheduled events
-    // and a news snapshot so the synthesis can name specific drivers.
+    // v1.1 Steps 4 + 7 — Always include the structured AI synthesis (three
+    // blocks: previousDay for Card A, today for Card B, intradaySnapshot for
+    // the Technical Brief below the 8-tile Market Snapshot strip). One LLM
+    // call. Pass today's scheduled events, a news snapshot, the 8 ETF live
+    // snapshot, and the current ET session.
     try {
       const reports = buildReportsCalendar();
       const todayReports = (reports?.calendar || [])
         .filter(day => day.isToday)
         .flatMap(day => day.reports || []);
+
       let newsHighlights = null;
       try {
         newsHighlights = await analyzeAllSourcesNews({ lastHours: 12 });
       } catch (e) {
         console.warn('News snapshot unavailable for synthesis:', e.message);
       }
+
+      // Fetch the 8 ETF snapshots in parallel for the intradaySnapshot block.
+      // Same data the Market Snapshot strip uses on the frontend.
+      const SNAPSHOT_ETFS = ['SPY', 'QQQ', 'IWM', 'DIA', 'USO', 'GLD', 'IEF', 'UUP'];
+      const snapshotResults = await Promise.allSettled(
+        SNAPSHOT_ETFS.map(sym => getChartData(sym, '15m'))
+      );
+      const etfSnapshot = {};
+      SNAPSHOT_ETFS.forEach((sym, i) => {
+        const r = snapshotResults[i];
+        if (r.status === 'fulfilled' && !r.value?.error && r.value?.live) {
+          const live = r.value.live;
+          const prev = live.previousClose ?? null;
+          const price = live.price ?? null;
+          if (Number.isFinite(price) && Number.isFinite(prev) && prev !== 0) {
+            etfSnapshot[sym] = {
+              price,
+              previousClose: prev,
+              changePct: ((price - prev) / prev) * 100
+            };
+          }
+        }
+      });
+
+      let sessionLabel = null;
+      try {
+        sessionLabel = getCurrentSession()?.name || null;
+      } catch (e) {
+        // session detection should never throw, but be defensive
+      }
+
       analysis.aiSynthesis = await generateAISynthesis(analysis, {
         todayReports,
-        newsHighlights
+        newsHighlights,
+        etfSnapshot,
+        sessionLabel
       });
     } catch (err) {
       console.warn('AI synthesis skipped:', err.message);
