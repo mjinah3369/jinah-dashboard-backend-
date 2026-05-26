@@ -1728,6 +1728,27 @@ export async function generateAISynthesis(finalAnalysis, extras = {}) {
     : '  - data unavailable';
 
   try {
+    // Map the session label to explicit tense guidance for the LLM.
+    // The output must NOT contradict itself by saying "stocks are rising" in
+    // the summary while the sessionContext says "ETFs are closed."
+    const sessionForTense = (sessionLabel || '').toLowerCase();
+    let tenseGuidance;
+    if (/pre.?market|pre.?open/.test(sessionForTense)) {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel} (US Pre-Market — before the open). Use FORWARD-LOOKING language: "Stocks are pointing higher pre-market", "watch for the open", "ahead of today's session". Refer to today's % moves as the pre-market read, not as final results.`;
+    } else if (/us regular|regular hours|us rth|us session/.test(sessionForTense)) {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel} (US Regular Hours — live trading right now). Use PRESENT TENSE: "Stocks are rising", "oil is dropping", "the dollar is firming." Talk about what's happening RIGHT NOW.`;
+    } else if (/after.hours|post.market/.test(sessionForTense)) {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel} (US After Hours — regular session has closed; extended-hours trading continues until 8 PM ET). Use PAST TENSE for today's day-session moves ("today closed with stocks higher") plus a brief watchful note on extended hours if moves are large. Do not use future tense — the session result is mostly in.`;
+    } else if (/settlement|post.close|closed/.test(sessionForTense)) {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel} (US market fully closed for the day — settlement). Use PAST TENSE for today's moves: "Today closed with Nasdaq up X%", "Gold sold off Y% on the day", "Oil ended slightly lower". Then add 1 forward-looking phrase about tomorrow's focus where useful. DO NOT use present-progressive tense ("stocks are rising" is WRONG when the market is closed).`;
+    } else if (/asia/.test(sessionForTense)) {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel} (US market is closed; Asia session is currently active). For today's data, use PAST TENSE referring to yesterday's US close. For the intradaySnapshot section, frame the 8 ETF data as "today's close" (since they trade only US hours and are now closed) and add brief context that Asia is currently trading. Don't say "stocks are moving" — they aren't; US is closed.`;
+    } else if (/london|europe/.test(sessionForTense)) {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel} (US market is closed; London/European session is currently active). Same treatment as the Asia case but reference London/Europe. The 8 ETF data are at yesterday's US close until 4 AM ET pre-market opens.`;
+    } else {
+      tenseGuidance = `CURRENT SESSION: ${sessionLabel || 'unknown'}. Match tense to the session reality: present tense if US market is live, past tense if it has closed.`;
+    }
+
     const prompt = `You are summarizing the current futures market state for a retail trader. Plain English only — NO finance-desk jargon.
 
 YESTERDAY/TODAY INPUTS:
@@ -1741,19 +1762,22 @@ YESTERDAY/TODAY INPUTS:
 - Today's scheduled events: ${upcomingEventsLine}
 - Top news right now: ${topNewsLine}
 
-LIVE INTRADAY SNAPSHOT (8 ETFs — current % vs prior close):
+LIVE INTRADAY SNAPSHOT (8 ETFs — current/last % vs prior close):
 ${liveSnapshotBlock}
 
-CURRENT SESSION: ${sessionLabel || 'unknown'}
+${tenseGuidance}
 
 WRITING RULES — strict:
 - Plain English. Short sentences. Concrete observations.
 - Avoid these words: risk-on, risk-off, positioning, bid, offer, prints, leg, squeeze, conviction, tape, flow, desk, hawkish/dovish (unless defining inline), "broader indices", "Mag7" without explaining, FOMC (use "Fed meeting"), CPI (use "inflation report").
 - If a term is necessary, give a 3-5 word inline explanation.
 - Name specific drivers when you can.
+- CRITICAL: Do NOT internally contradict yourself on tense. Every sentence in the output should agree with the session reality stated above. If the session is closed, EVERY description of today's price action must be past tense.
 
-GOOD: "Yesterday stocks rose because Apple reported strong earnings. Oil dropped 2% after a large inventory build."
-BAD: "Risk-on positioning emerged on robust Mag7 prints; CL pressured by bearish inventory."
+GOOD (US RTH, present tense): "Stocks are rising on Apple's strong earnings. Oil is dropping 2% after the inventory build."
+GOOD (Settlement, past tense): "Today closed with the Nasdaq up 2.4% on AI strength. Gold sold off nearly 5% on dollar strength."
+BAD (any session, jargon): "Risk-on positioning emerged on robust Mag7 prints."
+BAD (Settlement, wrong tense): "Stocks are having a strong day — ETFs are closed." (contradicts itself)
 
 Respond in JSON format ONLY:
 {
@@ -1765,17 +1789,17 @@ Respond in JSON format ONLY:
     "keyEvent": "1 sentence: the most significant event/earnings/fundamental that hit yesterday"
   },
   "today": {
-    "summary": "1 plain-English sentence about today's market state and what matters",
-    "movements": "1 sentence: how major US indices are moving right now in plain language",
-    "upcomingFundamentals": "1 sentence: the most important fundamental(s) happening today or that just happened, with time if known",
-    "focus": "1 sentence: the single most important thing to watch this session"
+    "summary": "1 plain-English sentence about today's market state — TENSE MUST MATCH the CURRENT SESSION above (present if live, past if closed, forward if pre-market)",
+    "movements": "1 sentence describing the major US index moves — match the session tense (e.g., 'are moving' if RTH, 'closed' if Settlement)",
+    "upcomingFundamentals": "1 sentence on the most important fundamental(s) — if before the event, future tense; if past, past tense; include the time",
+    "focus": "1 sentence: the single most important thing to watch this session OR the takeaway from today's close if closed"
   },
   "intradaySnapshot": {
-    "summary": "1-2 plain-English sentences synthesizing what the 8 live ETFs are telling us right now. Reference specific names where useful (e.g., 'Nasdaq leading' instead of 'tech up').",
-    "leaders": "1 short phrase naming the 1-2 strongest movers (which ETFs are most up, with %)",
-    "laggards": "1 short phrase naming the 1-2 weakest movers (which ETFs are most down, with %)",
-    "crossAsset": "1 sentence on a notable correlation or divergence across the 8 ETFs (e.g., 'Stocks and dollar both up — unusual; usually inverse.'). If nothing notable, say 'No unusual cross-asset behavior right now.'",
-    "sessionContext": "1 short phrase naming the current session and roughly where we are in it (e.g., 'US Regular Hours — 1h 20m in', or 'Pre-market', or 'After ET-close — ETFs closed')"
+    "summary": "1-2 plain-English sentences synthesizing what the 8 ETFs show. TENSE MUST MATCH the CURRENT SESSION — if Settlement/closed, use past tense ('today closed with…'); if RTH, present tense ('Nasdaq is leading…'). Reference specific names (e.g., 'Nasdaq' not just 'tech').",
+    "leaders": "1 short phrase naming the 1-2 strongest movers (which ETFs gained the most today, with %). Same number whether session is live or closed.",
+    "laggards": "1 short phrase naming the 1-2 weakest movers (which ETFs lost the most today, with %). Same number whether session is live or closed.",
+    "crossAsset": "1 sentence on a notable correlation or divergence across the 8 ETFs — tense matching the session (e.g., 'Stocks and dollar both rose together — unusual.' for closed; 'are rising together' for live). If nothing notable, say 'No unusual cross-asset behavior today.'",
+    "sessionContext": "1 short phrase naming the current session and where we are in it — must match the CURRENT SESSION above (e.g., 'US Regular Hours — 1h 20m in', 'After hours — market closed for the day', 'Pre-market — open in 45 minutes')"
   }
 }`;
 
