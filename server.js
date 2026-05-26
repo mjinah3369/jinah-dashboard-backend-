@@ -71,6 +71,7 @@ import {
   getQuickSessionBrief,
   prewarmSessionBrief,
   getSessionBriefStatus,
+  invalidateBriefCache,
   clearCache as clearAICache,
   getCacheStatus as getAICacheStatus
 } from './services/aiAgents.js';
@@ -1770,16 +1771,76 @@ app.get('/api/analysis/brief', async (req, res) => {
 
     const brief = await getQuickSessionBrief(session, news);
 
+    // v1.1 Step 3K — DO NOT add a `timestamp: new Date().toISOString()` here.
+    // The cached `brief` already carries a real `generatedAt` from the LLM
+    // call time; a per-request `timestamp` shadowed it and made the frontend
+    // always read "0 seconds ago". `servedAt` is fine if a response-served
+    // time is useful, but it is NOT the brief's generation time.
     res.json({
       session: session.current.name,
       isIB: session.current.isIB,
       ibMinutesRemaining: session.current.ibMinutesRemaining,
       ...brief,
-      timestamp: new Date().toISOString()
+      servedAt: new Date().toISOString()
     });
   } catch (error) {
     console.error('Session brief error:', error);
     res.status(500).json({ error: 'Brief generation failed', message: error.message });
+  }
+});
+
+// v1.1 Step 3K — POST /api/analysis/brief/refresh
+// Clears the cached brief for the current session and regenerates it via a
+// fresh LLM call. Used by the refresh button on the Session Brief card.
+// Backend-side rate limit: at most one refresh per 30 seconds per IP. If
+// the rate limit is hit, we still return the current cached brief (200) with
+// a `rateLimited: true` flag so the user sees the up-to-date data and the UI
+// can show a brief "please wait" hint instead of an error.
+const briefRefreshLastByIp = new Map();
+const BRIEF_REFRESH_COOLDOWN_MS = 30_000;
+
+app.post('/api/analysis/brief/refresh', async (req, res) => {
+  try {
+    const session = {
+      current: getCurrentSession(),
+      next: getNextSession()
+    };
+    const sessionKey = session.current?.key || 'unknown';
+    const ip = (req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+      || req.socket?.remoteAddress
+      || 'unknown');
+
+    const now = Date.now();
+    const lastRefresh = briefRefreshLastByIp.get(ip) || 0;
+    const withinCooldown = now - lastRefresh < BRIEF_REFRESH_COOLDOWN_MS;
+
+    if (!withinCooldown) {
+      // Outside cooldown — invalidate cache so the next call regenerates fresh.
+      invalidateBriefCache(sessionKey);
+      briefRefreshLastByIp.set(ip, now);
+    }
+
+    let news = [];
+    try {
+      news = await analyzeAllSourcesNews({ lastHours: 1 });
+    } catch (e) {
+      console.warn('Could not fetch news for brief refresh:', e.message);
+    }
+
+    const brief = await getQuickSessionBrief(session, news);
+
+    res.json({
+      session: session.current.name,
+      isIB: session.current.isIB,
+      ibMinutesRemaining: session.current.ibMinutesRemaining,
+      ...brief,
+      servedAt: new Date().toISOString(),
+      rateLimited: withinCooldown,
+      cooldownRemainingMs: withinCooldown ? BRIEF_REFRESH_COOLDOWN_MS - (now - lastRefresh) : 0
+    });
+  } catch (error) {
+    console.error('Session brief refresh error:', error);
+    res.status(500).json({ error: 'Brief refresh failed', message: error.message });
   }
 });
 

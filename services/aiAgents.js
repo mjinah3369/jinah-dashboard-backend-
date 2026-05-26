@@ -57,6 +57,12 @@ function setBriefCache(sessionKey, value) {
   briefCache.set(sessionKey, { value, timestamp: Date.now() });
 }
 
+// v1.1 Step 3K: invalidate one session's cached brief so the next read
+// regenerates from a fresh LLM call. Used by POST /api/analysis/brief/refresh.
+function invalidateBriefCache(sessionKey) {
+  briefCache.delete(sessionKey);
+}
+
 // ============================================================================
 // FUNDAMENTAL REPORTS HELPER - Formats report calendar for AI prompts
 // ============================================================================
@@ -889,19 +895,28 @@ async function getQuickSessionBrief(sessionInfo, newsData) {
 
   const topNews = (newsData || []).slice(0, 5).map(n => n.headline || n.title).join('; ');
 
-  const prompt = `You are a futures trading analyst. Give a quick brief for the ${sessionInfo.current?.name || 'current'} session.
+  const prompt = `You are explaining the ${sessionInfo.current?.name || 'current'} futures session to a retail trader who wants clear, plain-English context — not desk commentary.
 
 Session: ${sessionInfo.current?.name || 'Unknown'} (${sessionInfo.current?.description || ''})
 IB Status: ${sessionInfo.current?.isIB ? `Active - ${sessionInfo.current?.ibMinutesRemaining}m remaining` : 'Complete'}
 Focus: ${sessionInfo.current?.focus?.join(', ') || 'ES, NQ'}
 Top News: ${topNews || 'No recent news'}
 
+WRITING GUIDELINES — follow these strictly:
+- Plain everyday English. Short sentences. Concrete, not abstract.
+- Avoid finance-desk jargon. If you must use a technical term (VWAP, IB, gap fill, etc.) briefly explain it inline in 3-5 words.
+- Name specific drivers when possible (e.g., "Apple earnings" not "Mag7 prints"; "Fed minutes" not "monetary policy event risk").
+- No words like: risk-on, risk-off, positioning, bid, offer, prints, leg, squeeze setup, conviction, tape, flow.
+
+GOOD example: "Stocks pushed higher overnight after Apple posted strong earnings. Watch for follow-through into the US open."
+BAD example: "Risk-on positioning emerged on robust Mag7 prints; bid tape into the US handoff."
+
 Respond in JSON format ONLY:
 {
-  "brief": "1-2 sentence trading brief",
+  "brief": "1-2 sentence plain-English summary of what's happening this session",
   "focus": ["symbol1", "symbol2"],
-  "caution": "any warnings or cautions",
-  "opportunity": "main opportunity this session"
+  "caution": "things to watch out for, plain language",
+  "opportunity": "main thing worth watching this session, plain language"
 }`;
 
   try {
@@ -1035,6 +1050,7 @@ export {
   getQuickSessionBrief,
   prewarmSessionBrief,        // Fix 2: background pre-warm
   getSessionBriefStatus,      // Fix 2: diagnostic
+  invalidateBriefCache,       // v1.1 Step 3K: per-session refresh
   clearCache,
   getCacheStatus,
   // Keyword tagging utilities
