@@ -716,11 +716,30 @@ async function getChartData(symbol, interval = '1d') {
       const liveBucket = Math.floor(live.regularMarketTime / intervalSecs) * intervalSecs;
       const lastBucket = Math.floor(lastCandleTime / intervalSecs) * intervalSecs;
 
-      if (liveBucket > lastBucket) {
-        // Append a new forming candle for the current bucket
+      // Gap guard: only append a forming bar when the gap between the last
+      // candle and "now" is at most one bucket. If Yahoo's candle array is
+      // days stale (cloud-IP throttling on intra-day data), don't try to
+      // fake a single bar in the middle of the gap — that visually looks
+      // like a manipulated outlier sitting next to the real history.
+      // Daily data is fresh enough that this guard is rarely hit there.
+      const gapBuckets = (liveBucket - lastBucket) / intervalSecs;
+
+      if (liveBucket > lastBucket && gapBuckets <= 1) {
+        // Append a new forming candle for the next bucket.
+        // For intraday timeframes we cannot reliably know just-this-bucket's
+        // high/low — meta.dayHigh/dayLow are the whole session's H/L. So:
+        //   - For Daily (1d): the bucket IS the whole day, so dayHigh/dayLow
+        //     correctly bound it.
+        //   - For Hourly / 15-min / 5-min: use only live.price (we know
+        //     "what it touches now," not the bucket's intra-bucket sweep).
+        const isDaily = config.interval === '1d';
         const open = candles[candles.length - 1].close; // Open at prior close
-        const high = Math.max(open, live.dayHigh ?? live.price, live.price);
-        const low  = Math.min(open, live.dayLow  ?? live.price, live.price);
+        const high = isDaily
+          ? Math.max(open, live.dayHigh ?? live.price, live.price)
+          : Math.max(open, live.price);
+        const low = isDaily
+          ? Math.min(open, live.dayLow ?? live.price, live.price)
+          : Math.min(open, live.price);
         candles.push({
           time: liveBucket,
           open: parseFloat(open.toFixed(2)),
