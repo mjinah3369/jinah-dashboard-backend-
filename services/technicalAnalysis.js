@@ -598,7 +598,12 @@ const YAHOO_SYMBOLS = {
   'IWM': 'IWM',
   'DIA': 'DIA',
   'USO': 'USO',
-  'GLD': 'GLD'
+  'GLD': 'GLD',
+  // Macro markers row of the Live Market Snapshot strip — 10-year Treasury
+  // proxy (IEF tracks 7-10yr maturity) and US Dollar Index proxy (UUP tracks
+  // DXY ~1:1). Same fresh-from-cloud-IP property as the equity ETFs.
+  'IEF': 'IEF',
+  'UUP': 'UUP'
 };
 
 /**
