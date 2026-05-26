@@ -1646,11 +1646,13 @@ function buildFallbackBrief(marketData, newsSentiment, instruments, context) {
 }
 
 /**
- * Generate Claude AI synthesis — returns structured JSON with two blocks
- * (previousDay and today). One LLM call, two cards' worth of content.
+ * Generate Claude AI synthesis — returns structured JSON with three blocks
+ * (previousDay, today, intradaySnapshot). One LLM call, three sections.
  *
  * Card A on the main dashboard reads the previousDay block.
  * Card B on the main dashboard reads the today block.
+ * The Technical Brief card below the 8-tile market snapshot strip reads
+ * the intradaySnapshot block.
  *
  * Plain English, no finance-desk jargon. Plain-English mandate aligns with
  * the same treatment applied to /api/analysis/brief in Step 3K.
@@ -1659,7 +1661,9 @@ function buildFallbackBrief(marketData, newsSentiment, instruments, context) {
  * @param {object} [extras] - optional inputs
  * @param {object[]} [extras.todayReports] - today's scheduled events from buildReportsCalendar()
  * @param {object} [extras.newsHighlights] - top news headlines for the period
- * @returns {Promise<object|null>} { previousDay: {...}, today: {...}, generated, fallbackReason, generatedAt } | null
+ * @param {object} [extras.etfSnapshot] - keyed by ETF symbol with { price, previousClose, changePct }
+ * @param {string} [extras.sessionLabel] - current ET session label (e.g., "US Regular Session")
+ * @returns {Promise<object|null>} { previousDay, today, intradaySnapshot, generated, fallbackReason, generatedAt } | null
  */
 export async function generateAISynthesis(finalAnalysis, extras = {}) {
   const client = getAnthropicClient();
@@ -1667,7 +1671,12 @@ export async function generateAISynthesis(finalAnalysis, extras = {}) {
     return null;
   }
 
-  const { todayReports = [], newsHighlights = null } = extras;
+  const {
+    todayReports = [],
+    newsHighlights = null,
+    etfSnapshot = null,
+    sessionLabel = null
+  } = extras;
 
   // Helper to format the price/change line we already have for major instruments
   const fmtChange = (sym, ix) => {
@@ -1696,10 +1705,32 @@ export async function generateAISynthesis(finalAnalysis, extras = {}) {
     .filter(Boolean)
     .join('; ') || 'No major headlines';
 
+  // Live ETF snapshot lines (Step 7 — intraday brief input).
+  // etfSnapshot is keyed by symbol with { price, previousClose, changePct }.
+  const fmtEtf = (sym, friendly) => {
+    const e = etfSnapshot?.[sym];
+    if (!e || !Number.isFinite(e.changePct)) return null;
+    const arrow = e.changePct > 0 ? '+' : '';
+    return `${friendly} (${sym}) $${(e.price ?? 0).toFixed(2)} ${arrow}${e.changePct.toFixed(2)}%`;
+  };
+  const etfLines = [
+    fmtEtf('SPY', 'S&P 500'),
+    fmtEtf('QQQ', 'Nasdaq 100'),
+    fmtEtf('IWM', 'Russell 2000'),
+    fmtEtf('DIA', 'Dow Jones'),
+    fmtEtf('USO', 'Crude Oil'),
+    fmtEtf('GLD', 'Gold'),
+    fmtEtf('IEF', '10-Year Treasury'),
+    fmtEtf('UUP', 'US Dollar')
+  ].filter(Boolean);
+  const liveSnapshotBlock = etfLines.length
+    ? etfLines.map(l => `  - ${l}`).join('\n')
+    : '  - data unavailable';
+
   try {
     const prompt = `You are summarizing the current futures market state for a retail trader. Plain English only — NO finance-desk jargon.
 
-INPUTS:
+YESTERDAY/TODAY INPUTS:
 - Equities: ${equitiesLine || 'data unavailable'}
 - Oil (CL): ${oilLine || 'data unavailable'}
 - Gold (GC): ${goldLine || 'data unavailable'}
@@ -1709,6 +1740,11 @@ INPUTS:
 - Mag7 green: ${finalAnalysis.marketData?.mag7Green ?? 'N/A'} / 7
 - Today's scheduled events: ${upcomingEventsLine}
 - Top news right now: ${topNewsLine}
+
+LIVE INTRADAY SNAPSHOT (8 ETFs — current % vs prior close):
+${liveSnapshotBlock}
+
+CURRENT SESSION: ${sessionLabel || 'unknown'}
 
 WRITING RULES — strict:
 - Plain English. Short sentences. Concrete observations.
@@ -1733,6 +1769,13 @@ Respond in JSON format ONLY:
     "movements": "1 sentence: how major US indices are moving right now in plain language",
     "upcomingFundamentals": "1 sentence: the most important fundamental(s) happening today or that just happened, with time if known",
     "focus": "1 sentence: the single most important thing to watch this session"
+  },
+  "intradaySnapshot": {
+    "summary": "1-2 plain-English sentences synthesizing what the 8 live ETFs are telling us right now. Reference specific names where useful (e.g., 'Nasdaq leading' instead of 'tech up').",
+    "leaders": "1 short phrase naming the 1-2 strongest movers (which ETFs are most up, with %)",
+    "laggards": "1 short phrase naming the 1-2 weakest movers (which ETFs are most down, with %)",
+    "crossAsset": "1 sentence on a notable correlation or divergence across the 8 ETFs (e.g., 'Stocks and dollar both up — unusual; usually inverse.'). If nothing notable, say 'No unusual cross-asset behavior right now.'",
+    "sessionContext": "1 short phrase naming the current session and roughly where we are in it (e.g., 'US Regular Hours — 1h 20m in', or 'Pre-market', or 'After ET-close — ETFs closed')"
   }
 }`;
 
@@ -1748,6 +1791,7 @@ Respond in JSON format ONLY:
       return {
         previousDay: null,
         today: null,
+        intradaySnapshot: null,
         generated: false,
         fallbackReason: 'json_extract_failed',
         generatedAt: new Date().toISOString()
@@ -1761,6 +1805,7 @@ Respond in JSON format ONLY:
       return {
         previousDay: null,
         today: null,
+        intradaySnapshot: null,
         generated: false,
         fallbackReason: `json_parse_error: ${e.message}`,
         generatedAt: new Date().toISOString()
@@ -1770,6 +1815,7 @@ Respond in JSON format ONLY:
     return {
       previousDay: parsed.previousDay || null,
       today: parsed.today || null,
+      intradaySnapshot: parsed.intradaySnapshot || null,
       generated: true,
       fallbackReason: null,
       generatedAt: new Date().toISOString()
@@ -1779,6 +1825,7 @@ Respond in JSON format ONLY:
     return {
       previousDay: null,
       today: null,
+      intradaySnapshot: null,
       generated: false,
       fallbackReason: `llm_call_error: ${error.message}`,
       generatedAt: new Date().toISOString()
