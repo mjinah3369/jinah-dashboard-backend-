@@ -587,7 +587,18 @@ const YAHOO_SYMBOLS = {
   '6E': '6E=F',
   '6J': '6J=F',
   '6B': '6B=F',
-  '6A': '6A=F'
+  '6A': '6A=F',
+  // ETFs used by the Live Market Snapshot strip on the main dashboard.
+  // Yahoo's intraday data for ETFs is NOT throttled the way futures
+  // continuous contracts are on cloud IPs — so SPY/QQQ/USO/GLD are
+  // fresh from Render. These ETFs are the visual proxy for the major
+  // futures contracts (correlation ~1:1 intraday).
+  'SPY': 'SPY',
+  'QQQ': 'QQQ',
+  'IWM': 'IWM',
+  'DIA': 'DIA',
+  'USO': 'USO',
+  'GLD': 'GLD'
 };
 
 /**
