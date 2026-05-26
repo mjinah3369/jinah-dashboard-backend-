@@ -1060,10 +1060,28 @@ app.get('/api/final-analysis', async (req, res) => {
     // Generate final analysis
     const analysis = await generateFinalAnalysis(marketData);
 
-    // Optionally add AI synthesis
-    const { withSynthesis } = req.query;
-    if (withSynthesis === 'true') {
-      analysis.aiSynthesis = await generateAISynthesis(analysis);
+    // v1.1 Step 4 — Always include the structured AI synthesis (two blocks:
+    // previousDay for Card A, today for Card B) so the main dashboard can
+    // wire each card to the appropriate block. Pass today's scheduled events
+    // and a news snapshot so the synthesis can name specific drivers.
+    try {
+      const reports = buildReportsCalendar();
+      const todayReports = (reports?.calendar || [])
+        .filter(day => day.isToday)
+        .flatMap(day => day.reports || []);
+      let newsHighlights = null;
+      try {
+        newsHighlights = await analyzeAllSourcesNews({ lastHours: 12 });
+      } catch (e) {
+        console.warn('News snapshot unavailable for synthesis:', e.message);
+      }
+      analysis.aiSynthesis = await generateAISynthesis(analysis, {
+        todayReports,
+        newsHighlights
+      });
+    } catch (err) {
+      console.warn('AI synthesis skipped:', err.message);
+      analysis.aiSynthesis = null;
     }
 
     res.json(analysis);

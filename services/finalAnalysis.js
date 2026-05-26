@@ -1646,43 +1646,143 @@ function buildFallbackBrief(marketData, newsSentiment, instruments, context) {
 }
 
 /**
- * Generate Claude AI synthesis (optional enhanced analysis)
+ * Generate Claude AI synthesis — returns structured JSON with two blocks
+ * (previousDay and today). One LLM call, two cards' worth of content.
+ *
+ * Card A on the main dashboard reads the previousDay block.
+ * Card B on the main dashboard reads the today block.
+ *
+ * Plain English, no finance-desk jargon. Plain-English mandate aligns with
+ * the same treatment applied to /api/analysis/brief in Step 3K.
+ *
+ * @param {object} finalAnalysis - the output of generateFinalAnalysis()
+ * @param {object} [extras] - optional inputs
+ * @param {object[]} [extras.todayReports] - today's scheduled events from buildReportsCalendar()
+ * @param {object} [extras.newsHighlights] - top news headlines for the period
+ * @returns {Promise<object|null>} { previousDay: {...}, today: {...}, generated, fallbackReason, generatedAt } | null
  */
-export async function generateAISynthesis(finalAnalysis) {
+export async function generateAISynthesis(finalAnalysis, extras = {}) {
   const client = getAnthropicClient();
   if (!client) {
     return null;
   }
 
+  const { todayReports = [], newsHighlights = null } = extras;
+
+  // Helper to format the price/change line we already have for major instruments
+  const fmtChange = (sym, ix) => {
+    const data = ix?.[sym];
+    if (!data) return null;
+    const pct = data.changePercent ?? data.change ?? 0;
+    const arrow = pct > 0 ? '+' : '';
+    return `${sym} ${arrow}${pct.toFixed(2)}%`;
+  };
+  const equitiesLine = ['ES', 'NQ', 'RTY', 'YM']
+    .map(s => fmtChange(s, finalAnalysis.instruments))
+    .filter(Boolean)
+    .join(', ');
+  const oilLine = fmtChange('CL', finalAnalysis.instruments);
+  const goldLine = fmtChange('GC', finalAnalysis.instruments);
+
+  const upcomingEventsLine = (todayReports || [])
+    .slice(0, 6)
+    .map(r => `${r.time || 'TBD'} ${r.event || r.name || r.title || ''} (${r.importance || r.impact || 'N/A'})`)
+    .filter(Boolean)
+    .join('; ') || 'No scheduled events';
+
+  const topNewsLine = (newsHighlights?.taggedNews || newsHighlights?.topStories || [])
+    .slice(0, 5)
+    .map(n => n.headline || n.title)
+    .filter(Boolean)
+    .join('; ') || 'No major headlines';
+
   try {
-    const prompt = `You are an expert futures trader. Based on this market analysis, provide a 2-3 sentence trading insight.
+    const prompt = `You are summarizing the current futures market state for a retail trader. Plain English only — NO finance-desk jargon.
 
-Market Data:
-- VIX: ${finalAnalysis.marketData.vix} (${finalAnalysis.marketData.vixChange > 0 ? '+' : ''}${finalAnalysis.marketData.vixChange}%)
-- 10Y Note change: ${finalAnalysis.marketData.znChange}%
-- DXY change: ${finalAnalysis.marketData.dxyChange}%
-- Mag7: ${finalAnalysis.marketData.mag7Green}/7 green
+INPUTS:
+- Equities: ${equitiesLine || 'data unavailable'}
+- Oil (CL): ${oilLine || 'data unavailable'}
+- Gold (GC): ${goldLine || 'data unavailable'}
+- VIX: ${finalAnalysis.marketData?.vix ?? 'N/A'} (${finalAnalysis.marketData?.vixChange > 0 ? '+' : ''}${finalAnalysis.marketData?.vixChange ?? 0}%)
+- 10Y note yield change: ${finalAnalysis.marketData?.znChange ?? 0}%
+- US Dollar (DXY): ${finalAnalysis.marketData?.dxyChange ?? 0}%
+- Mag7 green: ${finalAnalysis.marketData?.mag7Green ?? 'N/A'} / 7
+- Today's scheduled events: ${upcomingEventsLine}
+- Top news right now: ${topNewsLine}
 
-Biases:
-- ES: ${finalAnalysis.instruments.ES.bias} (${finalAnalysis.instruments.ES.confidence}%)
-- NQ: ${finalAnalysis.instruments.NQ.bias} (${finalAnalysis.instruments.NQ.confidence}%)
-- GC: ${finalAnalysis.instruments.GC.bias} (${finalAnalysis.instruments.GC.confidence}%)
-- CL: ${finalAnalysis.instruments.CL.bias} (${finalAnalysis.instruments.CL.confidence}%)
+WRITING RULES — strict:
+- Plain English. Short sentences. Concrete observations.
+- Avoid these words: risk-on, risk-off, positioning, bid, offer, prints, leg, squeeze, conviction, tape, flow, desk, hawkish/dovish (unless defining inline), "broader indices", "Mag7" without explaining, FOMC (use "Fed meeting"), CPI (use "inflation report").
+- If a term is necessary, give a 3-5 word inline explanation.
+- Name specific drivers when you can.
 
-News: ${finalAnalysis.newsAnalyzed} articles, ${finalAnalysis.newsSummary.highImpact} high-impact
+GOOD: "Yesterday stocks rose because Apple reported strong earnings. Oil dropped 2% after a large inventory build."
+BAD: "Risk-on positioning emerged on robust Mag7 prints; CL pressured by bearish inventory."
 
-Provide a concise, actionable insight focusing on the strongest signal. No disclaimers.`;
+Respond in JSON format ONLY:
+{
+  "previousDay": {
+    "summary": "1 plain-English sentence about yesterday's overall market mood",
+    "equities": "1 sentence: how the major US index futures (ES/NQ/RTY/YM) performed yesterday, with the most notable name",
+    "oil": "1 sentence: how oil (CL) performed yesterday and why if known",
+    "gold": "1 sentence: how gold (GC) performed yesterday and why if known",
+    "keyEvent": "1 sentence: the most significant event/earnings/fundamental that hit yesterday"
+  },
+  "today": {
+    "summary": "1 plain-English sentence about today's market state and what matters",
+    "movements": "1 sentence: how major US indices are moving right now in plain language",
+    "upcomingFundamentals": "1 sentence: the most important fundamental(s) happening today or that just happened, with time if known",
+    "focus": "1 sentence: the single most important thing to watch this session"
+  }
+}`;
 
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 200,
+      max_tokens: 800,
       messages: [{ role: 'user', content: prompt }]
     });
 
-    return response.content[0]?.text || null;
+    const text = response.content[0]?.text || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return {
+        previousDay: null,
+        today: null,
+        generated: false,
+        fallbackReason: 'json_extract_failed',
+        generatedAt: new Date().toISOString()
+      };
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      return {
+        previousDay: null,
+        today: null,
+        generated: false,
+        fallbackReason: `json_parse_error: ${e.message}`,
+        generatedAt: new Date().toISOString()
+      };
+    }
+
+    return {
+      previousDay: parsed.previousDay || null,
+      today: parsed.today || null,
+      generated: true,
+      fallbackReason: null,
+      generatedAt: new Date().toISOString()
+    };
   } catch (error) {
     console.error('AI synthesis error:', error.message);
-    return null;
+    return {
+      previousDay: null,
+      today: null,
+      generated: false,
+      fallbackReason: `llm_call_error: ${error.message}`,
+      generatedAt: new Date().toISOString()
+    };
   }
 }
 
