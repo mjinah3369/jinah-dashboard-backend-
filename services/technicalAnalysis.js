@@ -655,6 +655,7 @@ async function getChartData(symbol, interval = '1d') {
 
     const timestamps = result.timestamp || [];
     const quote = result.indicators?.quote?.[0] || {};
+    const meta = result.meta || {};
 
     // Build candle data for chart
     const candles = [];
@@ -678,6 +679,69 @@ async function getChartData(symbol, interval = '1d') {
           value: vol,
           color: close >= open ? '#10b98180' : '#ef444480' // green/red with 50% alpha
         });
+      }
+    }
+
+    // Append a live "forming" candle from meta.regularMarketPrice when the
+    // candles array doesn't already include the current trading session.
+    // Yahoo's candle endpoint stops at the previous session's close when
+    // called from cloud IPs (Render), but the meta fields update live.
+    // This lets the chart's last bar move with the current price.
+    const live = {
+      price: meta.regularMarketPrice ?? null,
+      dayHigh: meta.regularMarketDayHigh ?? null,
+      dayLow: meta.regularMarketDayLow ?? null,
+      previousClose: meta.chartPreviousClose ?? meta.previousClose ?? null,
+      regularMarketTime: meta.regularMarketTime ?? null,
+      gmtoffset: meta.gmtoffset ?? null
+    };
+
+    if (
+      Number.isFinite(live.price) &&
+      Number.isFinite(live.regularMarketTime) &&
+      candles.length > 0
+    ) {
+      const lastCandleTime = candles[candles.length - 1].time;
+      // For Daily: append a forming bar if the live time is after the last
+      // candle's timestamp (i.e., a new session has started since the last
+      // close). Round to the timeframe's bucket so the chart treats it as a
+      // distinct bar.
+      const intervalSecs = {
+        '1d':  86400,
+        '1h':  3600,
+        '15m': 900,
+        '5m':  300
+      }[config.interval] || 86400;
+
+      const liveBucket = Math.floor(live.regularMarketTime / intervalSecs) * intervalSecs;
+      const lastBucket = Math.floor(lastCandleTime / intervalSecs) * intervalSecs;
+
+      if (liveBucket > lastBucket) {
+        // Append a new forming candle for the current bucket
+        const open = candles[candles.length - 1].close; // Open at prior close
+        const high = Math.max(open, live.dayHigh ?? live.price, live.price);
+        const low  = Math.min(open, live.dayLow  ?? live.price, live.price);
+        candles.push({
+          time: liveBucket,
+          open: parseFloat(open.toFixed(2)),
+          high: parseFloat(high.toFixed(2)),
+          low:  parseFloat(low.toFixed(2)),
+          close: parseFloat(live.price.toFixed(2))
+        });
+        volumes.push({
+          time: liveBucket,
+          value: 0, // Yahoo doesn't expose forming-bar volume; placeholder
+          color: live.price >= open ? '#10b98180' : '#ef444480'
+        });
+      } else if (liveBucket === lastBucket) {
+        // The latest candle IS the current bucket — update its close/high/low
+        // from live values so the bar "moves" as the price updates.
+        const last = candles[candles.length - 1];
+        last.close = parseFloat(live.price.toFixed(2));
+        last.high  = parseFloat(Math.max(last.high, live.dayHigh ?? live.price, live.price).toFixed(2));
+        last.low   = parseFloat(Math.min(last.low,  live.dayLow  ?? live.price, live.price).toFixed(2));
+        const vlast = volumes[volumes.length - 1];
+        vlast.color = last.close >= last.open ? '#10b98180' : '#ef444480';
       }
     }
 
@@ -730,6 +794,10 @@ async function getChartData(symbol, interval = '1d') {
       interval: config.interval,
       intervalLabel: config.label,
       candles,
+      // Live current quote — updates even when Yahoo's candle endpoint lags
+      // on intra-day data. The frontend can poll the chart endpoint at a fast
+      // cadence and the last candle plus this `live` block reflect current price.
+      live,
       // Volume histogram entries, color-coded green/red by candle direction.
       // Lightweight Charts HistogramSeries-compatible shape.
       volume: volumes,
