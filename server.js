@@ -947,12 +947,18 @@ app.get('/api/news/analyzed', async (req, res) => {
 // Get only high impact news
 app.get('/api/news/high-impact', async (req, res) => {
   try {
-    const { limit = 5 } = req.query;
-    const news = await fetchHighImpactNews(parseInt(limit));
+    const { limit = 5, freshHours = 24 } = req.query;
+    const parsedLimit = parseInt(limit, 10);
+    const parsedFreshHours = parseFloat(freshHours);
+    const news = await fetchHighImpactNews(
+      Number.isFinite(parsedLimit) ? parsedLimit : 5,
+      Number.isFinite(parsedFreshHours) ? parsedFreshHours : 24
+    );
 
     res.json({
       count: news.length,
       news,
+      freshHours: Number.isFinite(parsedFreshHours) ? parsedFreshHours : 24,
       lastUpdate: new Date().toISOString()
     });
   } catch (error) {

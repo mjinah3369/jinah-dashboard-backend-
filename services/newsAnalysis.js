@@ -344,11 +344,21 @@ export async function fetchAnalyzedNews(options = {}) {
 /**
  * Get only high impact news
  */
-export async function fetchHighImpactNews(limit = 5) {
+export async function fetchHighImpactNews(limit = 5, freshHours = 24) {
   const allNews = await fetchAnalyzedNews();
+  const cutoffMs = Date.now() - freshHours * 60 * 60 * 1000;
 
   return allNews
-    .filter(item => item.impact === 'HIGH' && item.relevance >= 5)
+    .filter(item => {
+      if (item.impact !== 'HIGH' || item.relevance < 5) return false;
+      // Freshness filter — drop anything older than the cutoff. Items are
+      // tagged with a `timestamp` (ISO string). If the field is missing,
+      // err on the side of dropping it (we'd rather show "no recent news"
+      // than render stale headlines as if they just happened).
+      const t = item.timestamp ? new Date(item.timestamp).getTime() : NaN;
+      if (!Number.isFinite(t)) return false;
+      return t >= cutoffMs;
+    })
     .slice(0, limit);
 }
 
