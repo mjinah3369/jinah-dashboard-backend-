@@ -1678,21 +1678,6 @@ export async function generateAISynthesis(finalAnalysis, extras = {}) {
     sessionLabel = null
   } = extras;
 
-  // Helper to format the price/change line we already have for major instruments
-  const fmtChange = (sym, ix) => {
-    const data = ix?.[sym];
-    if (!data) return null;
-    const pct = data.changePercent ?? data.change ?? 0;
-    const arrow = pct > 0 ? '+' : '';
-    return `${sym} ${arrow}${pct.toFixed(2)}%`;
-  };
-  const equitiesLine = ['ES', 'NQ', 'RTY', 'YM']
-    .map(s => fmtChange(s, finalAnalysis.instruments))
-    .filter(Boolean)
-    .join(', ');
-  const oilLine = fmtChange('CL', finalAnalysis.instruments);
-  const goldLine = fmtChange('GC', finalAnalysis.instruments);
-
   const upcomingEventsLine = (todayReports || [])
     .slice(0, 6)
     .map(r => `${r.time || 'TBD'} ${r.event || r.name || r.title || ''} (${r.importance || r.impact || 'N/A'})`)
@@ -1705,26 +1690,43 @@ export async function generateAISynthesis(finalAnalysis, extras = {}) {
     .filter(Boolean)
     .join('; ') || 'No major headlines';
 
-  // Live ETF snapshot lines (Step 7 — intraday brief input).
-  // etfSnapshot is keyed by symbol with { price, previousClose, changePct }.
-  const fmtEtf = (sym, friendly) => {
+  // Live ETF snapshot lines (Step 9 — split into yesterday vs today).
+  // etfSnapshot is keyed by symbol with:
+  //   { price, previousClose, todayPct, previousDayPct }
+  // todayPct       = today's intraday move (current price vs yesterday's close)
+  // previousDayPct = yesterday's full-session move (yesterday close vs day-before close)
+  // The split is critical: during pre-market or post-close, the LLM otherwise
+  // mistakes one for the other and writes "yesterday was flat" or "today
+  // closed with X" against the wrong dataset.
+  const fmtPrev = (sym, friendly) => {
     const e = etfSnapshot?.[sym];
-    if (!e || !Number.isFinite(e.changePct)) return null;
-    const arrow = e.changePct > 0 ? '+' : '';
-    return `${friendly} (${sym}) $${(e.price ?? 0).toFixed(2)} ${arrow}${e.changePct.toFixed(2)}%`;
+    if (!e || !Number.isFinite(e.previousDayPct)) return null;
+    const arrow = e.previousDayPct > 0 ? '+' : '';
+    return `${friendly} (${sym}) ${arrow}${e.previousDayPct.toFixed(2)}%`;
   };
-  const etfLines = [
-    fmtEtf('SPY', 'S&P 500'),
-    fmtEtf('QQQ', 'Nasdaq 100'),
-    fmtEtf('IWM', 'Russell 2000'),
-    fmtEtf('DIA', 'Dow Jones'),
-    fmtEtf('USO', 'Crude Oil'),
-    fmtEtf('GLD', 'Gold'),
-    fmtEtf('IEF', '10-Year Treasury'),
-    fmtEtf('UUP', 'US Dollar')
-  ].filter(Boolean);
-  const liveSnapshotBlock = etfLines.length
-    ? etfLines.map(l => `  - ${l}`).join('\n')
+  const fmtToday = (sym, friendly) => {
+    const e = etfSnapshot?.[sym];
+    if (!e || !Number.isFinite(e.todayPct)) return null;
+    const arrow = e.todayPct > 0 ? '+' : '';
+    return `${friendly} (${sym}) $${(e.price ?? 0).toFixed(2)} ${arrow}${e.todayPct.toFixed(2)}%`;
+  };
+  const FRIENDLY = [
+    ['SPY', 'S&P 500'],
+    ['QQQ', 'Nasdaq 100'],
+    ['IWM', 'Russell 2000'],
+    ['DIA', 'Dow Jones'],
+    ['USO', 'Crude Oil'],
+    ['GLD', 'Gold'],
+    ['IEF', '10-Year Treasury'],
+    ['UUP', 'US Dollar']
+  ];
+  const previousDayLines = FRIENDLY.map(([s, n]) => fmtPrev(s, n)).filter(Boolean);
+  const todayLines = FRIENDLY.map(([s, n]) => fmtToday(s, n)).filter(Boolean);
+  const previousDayBlock = previousDayLines.length
+    ? previousDayLines.map(l => `  - ${l}`).join('\n')
+    : '  - data unavailable';
+  const todayBlock = todayLines.length
+    ? todayLines.map(l => `  - ${l}`).join('\n')
     : '  - data unavailable';
 
   try {
@@ -1751,10 +1753,13 @@ export async function generateAISynthesis(finalAnalysis, extras = {}) {
 
     const prompt = `You are summarizing the current futures market state for a retail trader. Plain English only — NO finance-desk jargon.
 
-YESTERDAY/TODAY INPUTS:
-- Equities: ${equitiesLine || 'data unavailable'}
-- Oil (CL): ${oilLine || 'data unavailable'}
-- Gold (GC): ${goldLine || 'data unavailable'}
+YESTERDAY DATA — the last fully-closed US trading session's close-to-prior-close moves (use ONLY for the "previousDay" block):
+${previousDayBlock}
+
+TODAY DATA — today's intraday moves so far (current price vs yesterday's close — use ONLY for the "today" and "intradaySnapshot" blocks):
+${todayBlock}
+
+OTHER CONTEXT:
 - VIX: ${finalAnalysis.marketData?.vix ?? 'N/A'} (${finalAnalysis.marketData?.vixChange > 0 ? '+' : ''}${finalAnalysis.marketData?.vixChange ?? 0}%)
 - 10Y note yield change: ${finalAnalysis.marketData?.znChange ?? 0}%
 - US Dollar (DXY): ${finalAnalysis.marketData?.dxyChange ?? 0}%
@@ -1762,8 +1767,7 @@ YESTERDAY/TODAY INPUTS:
 - Today's scheduled events: ${upcomingEventsLine}
 - Top news right now: ${topNewsLine}
 
-LIVE INTRADAY SNAPSHOT (8 ETFs — current/last % vs prior close):
-${liveSnapshotBlock}
+CRITICAL DATA RULE: The YESTERDAY DATA and TODAY DATA numbers are separate measurements covering different time windows. NEVER mix them. The previousDay block must use ONLY the YESTERDAY DATA numbers. The today and intradaySnapshot blocks must use ONLY the TODAY DATA numbers. If TODAY DATA shows ~0% across the board, that means today's session hasn't moved much yet — say so honestly; do not borrow YESTERDAY DATA to fill it in.
 
 ${tenseGuidance}
 
@@ -1782,10 +1786,10 @@ BAD (Settlement, wrong tense): "Stocks are having a strong day — ETFs are clos
 Respond in JSON format ONLY:
 {
   "previousDay": {
-    "summary": "1 plain-English sentence about yesterday's overall market mood",
-    "equities": "1 sentence: how the major US index futures (ES/NQ/RTY/YM) performed yesterday, with the most notable name",
-    "oil": "1 sentence: how oil (CL) performed yesterday and why if known",
-    "gold": "1 sentence: how gold (GC) performed yesterday and why if known",
+    "summary": "1 plain-English sentence about yesterday's overall market mood — based ONLY on YESTERDAY DATA above",
+    "equities": "1 sentence: how the major US indexes (S&P 500, Nasdaq, Russell 2000, Dow) performed yesterday, naming the most notable mover with its %. Use friendly names, not tickers.",
+    "oil": "1 sentence: how oil performed yesterday with its % and a likely driver if known",
+    "gold": "1 sentence: how gold performed yesterday with its % and a likely driver if known",
     "keyEvent": "1 sentence: the most significant event/earnings/fundamental that hit yesterday"
   },
   "today": {
