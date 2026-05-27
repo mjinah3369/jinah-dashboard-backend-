@@ -45,10 +45,42 @@ function epochToEtDateKey(epochSec) {
   return etDateKey(new Date(epochSec * 1000));
 }
 
+function epochToUtcDateKey(epochSec) {
+  return new Date(epochSec * 1000).toISOString().slice(0, 10);
+}
+
 function daysBetween(fromDateStr, toDateStr) {
   const a = new Date(fromDateStr + 'T00:00:00');
   const b = new Date(toDateStr + 'T00:00:00');
   return Math.round((b - a) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * Locate the daily candle index that corresponds to a given report date.
+ * Robust to either UTC-midnight or market-open candle timestamps (Yahoo's
+ * convention varies). Tries ET-date match first, then UTC-date match, then
+ * a ±1.5-day tolerance window. Returns -1 if no candle is within range.
+ */
+function findCandleForDate(candles, reportDateStr) {
+  if (!Array.isArray(candles) || candles.length === 0 || !reportDateStr) return -1;
+  // Exact match on ET date
+  let idx = candles.findIndex(c => epochToEtDateKey(c.time) === reportDateStr);
+  if (idx >= 0) return idx;
+  // Exact match on UTC date
+  idx = candles.findIndex(c => epochToUtcDateKey(c.time) === reportDateStr);
+  if (idx >= 0) return idx;
+  // Tolerance window: pick the candle nearest the report date within ±1.5 days
+  const target = new Date(reportDateStr + 'T12:00:00Z').getTime();
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+  for (let i = 0; i < candles.length; i++) {
+    const diff = Math.abs(candles[i].time * 1000 - target);
+    if (diff < bestDiff && diff <= 1.5 * 24 * 60 * 60 * 1000) {
+      bestDiff = diff;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
 }
 
 // ---------- verdict bucketing ----------
@@ -128,25 +160,18 @@ async function getRecentImpacts({ primaryDays = 7, fallbackCount = 5 } = {}) {
           hour: r.hour || null
         };
       }
-      // Find the candle for the report date and the prior trading-day candle.
-      const reportIdx = candles.findIndex(c => epochToEtDateKey(c.time) === r.date);
+      // Find the candle for the report date. Uses ET/UTC/tolerance matching
+      // because Yahoo's daily-candle timestamp convention varies (some come
+      // back as UTC midnight, others as market-open). The price move is then
+      // computed against the prior candle (which represents the prior
+      // trading day's close — automatically handles weekends).
+      const reportIdx = findCandleForDate(candles, r.date);
       let movePct = null;
       if (reportIdx > 0) {
         const reportClose = candles[reportIdx]?.close;
         const priorClose = candles[reportIdx - 1]?.close;
         if (Number.isFinite(reportClose) && Number.isFinite(priorClose) && priorClose !== 0) {
           movePct = ((reportClose - priorClose) / priorClose) * 100;
-        }
-      } else if (reportIdx === -1) {
-        // Report date not in candle array (could be a future/today bar or
-        // a non-trading day). Use the most recent two closes as a proxy
-        // only if the report was strictly in the past.
-        const last = candles[candles.length - 1];
-        const prior = candles[candles.length - 2];
-        if (last && prior && Number.isFinite(last.close) && Number.isFinite(prior.close)) {
-          // This is a proxy — flag the verdict as "Unknown" since we can't
-          // confirm which day's move corresponds to the report.
-          // (Don't paint a bogus number.)
         }
       }
       return {
