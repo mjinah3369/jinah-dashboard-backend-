@@ -1020,6 +1020,14 @@ let marketDataCache = null;
 let marketDataCacheTime = null;
 const MARKET_DATA_CACHE_DURATION = 2 * 60 * 1000; // 2 minutes
 
+// AI synthesis cache (Step 9). Synthesis is the slow part (~15-20s LLM call).
+// Cache the result for 4 minutes, keyed by ET-date + session label so a date
+// rollover or session change naturally invalidates without manual clearing.
+let aiSynthesisCache = null;
+let aiSynthesisCacheKey = null;
+let aiSynthesisCacheTime = null;
+const AI_SYNTHESIS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
+
 // Get comprehensive final analysis with bias for ES, NQ, YM, RTY, GC, CL
 app.get('/api/final-analysis', async (req, res) => {
   try {
@@ -1060,12 +1068,35 @@ app.get('/api/final-analysis', async (req, res) => {
     // Generate final analysis
     const analysis = await generateFinalAnalysis(marketData);
 
-    // v1.1 Steps 4 + 7 — Always include the structured AI synthesis (three
-    // blocks: previousDay for Card A, today for Card B, intradaySnapshot for
-    // the Technical Brief below the 8-tile Market Snapshot strip). One LLM
-    // call. Pass today's scheduled events, a news snapshot, the 8 ETF live
-    // snapshot, and the current ET session.
+    // v1.1 Steps 4 + 7 + 9 — Structured AI synthesis with 4-min cache.
+    // Three blocks: previousDay for Card A, today for Card B, intradaySnapshot
+    // for the Technical Brief below the 8-tile Market Snapshot strip. One LLM
+    // call. Cache keyed by ET-date + session so date rollover / session change
+    // invalidates naturally. Step 9 split the inputs into YESTERDAY DATA
+    // (previousDayPct from daily candles) vs TODAY DATA (todayPct from live)
+    // so the LLM stops conflating the two during pre-market / post-close.
     try {
+      let sessionLabel = null;
+      try { sessionLabel = getCurrentSession()?.name || null; } catch (e) { /* defensive */ }
+
+      const etDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(new Date()); // YYYY-MM-DD in ET
+      const cacheKey = `${etDate}::${sessionLabel || 'unknown'}`;
+      const cacheNow = Date.now();
+      const cacheFresh = aiSynthesisCache
+        && aiSynthesisCacheKey === cacheKey
+        && aiSynthesisCacheTime
+        && (cacheNow - aiSynthesisCacheTime) < AI_SYNTHESIS_CACHE_DURATION;
+
+      if (cacheFresh) {
+        analysis.aiSynthesis = aiSynthesisCache;
+        // Fall through to res.json — skip the rebuild block below.
+        res.json(analysis);
+        return;
+      }
+
       const reports = buildReportsCalendar();
       const todayReports = (reports?.calendar || [])
         .filter(day => day.isToday)
@@ -1078,35 +1109,58 @@ app.get('/api/final-analysis', async (req, res) => {
         console.warn('News snapshot unavailable for synthesis:', e.message);
       }
 
-      // Fetch the 8 ETF snapshots in parallel for the intradaySnapshot block.
-      // Same data the Market Snapshot strip uses on the frontend.
+      // Fetch the 8 ETF snapshots for the intradaySnapshot block.
+      // We pull TWO timeframes per symbol in parallel:
+      //   15m — gives us today's live price + previousClose for "today so far"
+      //   1d  — gives us the daily candle history for "yesterday's session move"
+      // The split is critical: a single field "changePct" was ambiguous (today
+      // intraday vs yesterday's session) and caused the LLM to confuse the two
+      // when pre-market or post-close. See finalAnalysis.js for downstream use.
       const SNAPSHOT_ETFS = ['SPY', 'QQQ', 'IWM', 'DIA', 'USO', 'GLD', 'IEF', 'UUP'];
-      const snapshotResults = await Promise.allSettled(
-        SNAPSHOT_ETFS.map(sym => getChartData(sym, '15m'))
-      );
+      const [snapshotResults, dailyResults] = await Promise.all([
+        Promise.allSettled(SNAPSHOT_ETFS.map(sym => getChartData(sym, '15m'))),
+        Promise.allSettled(SNAPSHOT_ETFS.map(sym => getChartData(sym, '1d')))
+      ]);
       const etfSnapshot = {};
       SNAPSHOT_ETFS.forEach((sym, i) => {
-        const r = snapshotResults[i];
-        if (r.status === 'fulfilled' && !r.value?.error && r.value?.live) {
-          const live = r.value.live;
-          const prev = live.previousClose ?? null;
-          const price = live.price ?? null;
-          if (Number.isFinite(price) && Number.isFinite(prev) && prev !== 0) {
-            etfSnapshot[sym] = {
-              price,
-              previousClose: prev,
-              changePct: ((price - prev) / prev) * 100
-            };
+        const snap = snapshotResults[i];
+        const daily = dailyResults[i];
+        if (snap.status !== 'fulfilled' || snap.value?.error || !snap.value?.live) return;
+
+        const live = snap.value.live;
+        const prev = live.previousClose ?? null;
+        const price = live.price ?? null;
+        if (!Number.isFinite(price) || !Number.isFinite(prev) || prev === 0) return;
+
+        // Today's intraday so-far: current price vs yesterday's close.
+        // During pre-market this is naturally ~0% — that's correct and the LLM
+        // is now told to report it as-is rather than borrow yesterday's numbers.
+        const todayPct = ((price - prev) / prev) * 100;
+
+        // Yesterday's session move from daily candles. Layout:
+        //   candles[last]   = today's bar (forming or current — close ≈ live.price)
+        //   candles[last-1] = yesterday's fully-closed bar
+        //   candles[last-2] = day-before's fully-closed bar
+        // Yesterday's pct = (yesterday close - day-before close) / day-before close
+        let previousDayPct = null;
+        if (daily.status === 'fulfilled' && !daily.value?.error) {
+          const candles = daily.value.candles || [];
+          if (candles.length >= 3) {
+            const yesterdayClose = candles[candles.length - 2]?.close;
+            const dayBeforeClose = candles[candles.length - 3]?.close;
+            if (Number.isFinite(yesterdayClose) && Number.isFinite(dayBeforeClose) && dayBeforeClose !== 0) {
+              previousDayPct = ((yesterdayClose - dayBeforeClose) / dayBeforeClose) * 100;
+            }
           }
         }
-      });
 
-      let sessionLabel = null;
-      try {
-        sessionLabel = getCurrentSession()?.name || null;
-      } catch (e) {
-        // session detection should never throw, but be defensive
-      }
+        etfSnapshot[sym] = {
+          price,
+          previousClose: prev,
+          todayPct,
+          previousDayPct
+        };
+      });
 
       analysis.aiSynthesis = await generateAISynthesis(analysis, {
         todayReports,
@@ -1114,6 +1168,14 @@ app.get('/api/final-analysis', async (req, res) => {
         etfSnapshot,
         sessionLabel
       });
+
+      // Step 9 cache write — only cache successful synthesis results so
+      // transient LLM failures don't poison the cache for 4 minutes.
+      if (analysis.aiSynthesis && analysis.aiSynthesis.generated) {
+        aiSynthesisCache = analysis.aiSynthesis;
+        aiSynthesisCacheKey = cacheKey;
+        aiSynthesisCacheTime = Date.now();
+      }
     } catch (err) {
       console.warn('AI synthesis skipped:', err.message);
       analysis.aiSynthesis = null;
@@ -1136,6 +1198,9 @@ app.post('/api/final-analysis/refresh', async (req, res) => {
     clearFinalAnalysisCache();
     marketDataCache = null;
     marketDataCacheTime = null;
+    aiSynthesisCache = null;
+    aiSynthesisCacheKey = null;
+    aiSynthesisCacheTime = null;
 
     // Fetch fresh market data
     const [futuresResult, currencyResult, sectorResult, mag7Result] = await Promise.allSettled([
