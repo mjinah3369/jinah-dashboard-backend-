@@ -10,6 +10,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getCurrentSession } from './sessionEngine.js';
+import { fetchMajorEarningsCalendar } from './alphaVantage.js';
 
 const anthropic = process.env.ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -23,6 +24,52 @@ const anthropic = process.env.ANTHROPIC_API_KEY
  * string ready to be plugged into the LLM prompt. Keeping it terse keeps the
  * prompt token count low.
  */
+/**
+ * Build a structured earnings context: today's major reports (specific
+ * names, not "Various"), and if today is empty, the next major name +
+ * how many days away. Backed by a 14-day window of MAJOR earnings only
+ * (Mag7 + ~25 bellwethers).
+ */
+async function buildEarningsContext() {
+  const upcoming = await fetchMajorEarningsCalendar({ days: 14 });
+  const today = upcoming.filter(e => e.daysAway === 0);
+  const future = upcoming.filter(e => e.daysAway > 0);
+  const nextMajor = future[0] || null;
+
+  return {
+    todayMajor: today,        // array, may be empty
+    nextMajor,                // single object or null
+    upcoming14d: upcoming,    // full window for context
+    todayCount: today.length,
+    upcomingCount: upcoming.length
+  };
+}
+
+function formatEarningsInput(ctx) {
+  if (ctx.todayCount > 0) {
+    const list = ctx.todayMajor
+      .map(e => `${e.symbol} (affects ${(e.affectedInstruments || []).join('+')})`)
+      .join(', ');
+    return [
+      `Today's major reports: ${list}`,
+      ctx.upcomingCount > ctx.todayCount
+        ? `Coming up in next 14 days: ${ctx.upcomingCount - ctx.todayCount} more major names.`
+        : 'No further major reports in the next 14 days.'
+    ].join('\n');
+  }
+  // No major earnings today — surface the next one explicitly.
+  if (ctx.nextMajor) {
+    return [
+      `No major earnings reports today.`,
+      `Next major: ${ctx.nextMajor.symbol} in ${ctx.nextMajor.daysAway} day(s) on ${ctx.nextMajor.reportDate} (affects ${(ctx.nextMajor.affectedInstruments || []).join('+')}).`,
+      ctx.upcomingCount > 1
+        ? `Total ${ctx.upcomingCount} major reports across the next 14 days.`
+        : ''
+    ].filter(Boolean).join('\n');
+  }
+  return 'No major earnings reports today, and none scheduled in the next 14 days.';
+}
+
 function buildBriefInputs(dashboardData) {
   // --- Mega-Cap Tech ---
   const mag7 = dashboardData?.magnificentSeven || {};
@@ -41,16 +88,12 @@ function buildBriefInputs(dashboardData) {
   ].join('\n');
 
   // --- Earnings ---
-  const earnings = Array.isArray(dashboardData?.earnings) ? dashboardData.earnings : [];
-  const earningsLines = earnings.slice(0, 8).map(e => {
-    const t = e.time ?? 'TBD';
-    const c = e.company ?? 'Unknown';
-    const ix = Array.isArray(e.affectedInstruments) ? ` [${e.affectedInstruments.join(',')}]` : '';
-    return `${t} - ${c}${ix}`;
-  });
-  const earningsInput = earningsLines.length
-    ? earningsLines.join('\n')
-    : 'No major earnings reports tracked for today.';
+  // NOTE: `dashboardData.earnings` carries a fallback placeholder
+  // (`[{ company: 'Various' }]`) from dashboardBuilder.js. We deliberately
+  // bypass it and inject the real major-earnings context via earningsInput
+  // (built async by buildEarningsContext + formatEarningsInput).
+  const earningsInput = dashboardData?._earningsBriefInput
+    || 'No major earnings context available.';
 
   // --- Sectors ---
   const sectors = dashboardData?.sectors || {};
@@ -134,7 +177,14 @@ export async function generateTabBriefs(dashboardData) {
   let sessionLabel = null;
   try { sessionLabel = getCurrentSession()?.name || null; } catch (e) { /* defensive */ }
 
-  const inputs = buildBriefInputs(dashboardData);
+  // Build real earnings context (async — hits Alpha Vantage). Inject it into
+  // the dashboardData proxy before formatting the prompt inputs so the
+  // synchronous buildBriefInputs() can read it without re-shaping.
+  const earningsCtx = await buildEarningsContext();
+  const earningsInputText = formatEarningsInput(earningsCtx);
+  const dataForPrompt = { ...dashboardData, _earningsBriefInput: earningsInputText };
+
+  const inputs = buildBriefInputs(dataForPrompt);
   const tenseGuidance = getTenseGuidance(sessionLabel);
 
   const prompt = `You are writing four short situational briefs for the tab pages of a futures trading dashboard. Each brief is for a retail trader, plain English, no finance-desk jargon.
@@ -144,8 +194,14 @@ ${tenseGuidance}
 MEGA-CAP TECH INPUTS:
 ${inputs.megaCap}
 
-EARNINGS INPUTS (today's reports):
+EARNINGS INPUTS (the actual major reports landscape — Mag7 + ~25 bellwethers only, 14-day window):
 ${inputs.earnings}
+
+EARNINGS-WRITING RULES — strict:
+- If today has major reports, NAME them by ticker AND describe what to watch (e.g., "Apple after the bell, watch iPhone-services mix and Q4 guidance for NQ"). Never say "various companies".
+- If today has NO major reports, say so explicitly: "No major earnings today." Then name the NEXT major report coming with its date and what it means for futures (e.g., "Next major: NVDA in 3 days on 2026-05-30 — guidance will move NQ").
+- Do not invent reports that aren't in the input. Do not say "results are flowing in" if the input shows zero today.
+- Mention which futures the report tends to move (NQ for Mag7, ES+YM for banks).
 
 SECTORS INPUTS (sector ETF moves):
 ${inputs.sectors}
@@ -168,8 +224,8 @@ Respond in JSON ONLY:
     "focus": "1 sentence: the single most important name or story to watch for this group"
   },
   "earnings": {
-    "summary": "2 sentences about today's earnings landscape — who's reporting, market implications",
-    "focus": "1 sentence: the single most-watched name today and why"
+    "summary": "2 sentences. Use ONLY the EARNINGS INPUTS data above. If there ARE major reports today, name them by ticker and what to watch. If there are NONE today, lead with 'No major earnings today' and then name the next major report coming with its ticker, date, and what it means for futures. Never write 'various companies'. Never invent reports.",
+    "focus": "1 sentence: the single highest-impact name to watch (today if any, otherwise the next upcoming) and why traders care"
   },
   "sectors": {
     "summary": "2 sentences about which sectors are leading vs lagging right now and what's driving it",
