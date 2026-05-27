@@ -124,6 +124,7 @@ import {
 } from './services/finalAnalysis.js';
 import { registerAdminVpRoutes } from './services/adminVP.js';
 import { getInstrumentDetail } from './services/instrumentDetail.js';
+import { generateTabBriefs } from './services/tabBriefs.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1028,6 +1029,15 @@ let aiSynthesisCacheKey = null;
 let aiSynthesisCacheTime = null;
 const AI_SYNTHESIS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
 
+// Tab briefs cache (Step 18). Single LLM call returns 4 plain-English briefs
+// for the Mega-Cap Tech / Earnings / Sectors / International nav-rail tabs.
+// Same key strategy as aiSynthesisCache so a date rollover or session change
+// invalidates naturally without manual clearing.
+let tabBriefsCache = null;
+let tabBriefsCacheKey = null;
+let tabBriefsCacheTime = null;
+const TAB_BRIEFS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
+
 // Get comprehensive final analysis with bias for ES, NQ, YM, RTY, GC, CL
 app.get('/api/final-analysis', async (req, res) => {
   try {
@@ -1228,6 +1238,9 @@ app.post('/api/final-analysis/refresh', async (req, res) => {
     aiSynthesisCache = null;
     aiSynthesisCacheKey = null;
     aiSynthesisCacheTime = null;
+    tabBriefsCache = null;
+    tabBriefsCacheKey = null;
+    tabBriefsCacheTime = null;
 
     // Fetch fresh market data
     const [futuresResult, currencyResult, sectorResult, mag7Result] = await Promise.allSettled([
@@ -1283,6 +1296,99 @@ app.get('/api/final-analysis/status', (req, res) => {
     },
     lastUpdate: new Date().toISOString()
   });
+});
+
+// ============================================================================
+// TAB BRIEFS ENDPOINT (Step 18)
+// Returns 4 plain-English briefs (Mega-Cap, Earnings, Sectors, International)
+// in one LLM call. Cached 4 min, keyed by ET-date + session so date rollover
+// and session transitions invalidate naturally.
+// ============================================================================
+
+app.get('/api/tab-briefs', async (req, res) => {
+  try {
+    if (!cachedData) {
+      return res.status(503).json({
+        error: 'Dashboard data not ready yet',
+        retryAfter: 'Try again in a few seconds'
+      });
+    }
+
+    let sessionLabel = null;
+    try { sessionLabel = getCurrentSession()?.name || null; } catch (e) { /* defensive */ }
+
+    const etDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+    const cacheKey = `${etDate}::${sessionLabel || 'unknown'}`;
+
+    const now = Date.now();
+    const cacheFresh = tabBriefsCache
+      && tabBriefsCacheKey === cacheKey
+      && tabBriefsCacheTime
+      && (now - tabBriefsCacheTime) < TAB_BRIEFS_CACHE_DURATION;
+
+    if (cacheFresh) {
+      return res.json(tabBriefsCache);
+    }
+
+    const briefs = await generateTabBriefs(cachedData);
+
+    // Only cache successful generations so a transient LLM failure doesn't
+    // poison the cache for 4 minutes.
+    if (briefs && briefs.generated) {
+      tabBriefsCache = briefs;
+      tabBriefsCacheKey = cacheKey;
+      tabBriefsCacheTime = Date.now();
+    }
+
+    res.json(briefs);
+  } catch (error) {
+    console.error('Tab briefs error:', error);
+    res.status(500).json({
+      error: 'Failed to generate tab briefs',
+      message: error.message
+    });
+  }
+});
+
+// Force-refresh the tab briefs cache.
+app.post('/api/tab-briefs/refresh', async (req, res) => {
+  try {
+    tabBriefsCache = null;
+    tabBriefsCacheKey = null;
+    tabBriefsCacheTime = null;
+
+    if (!cachedData) {
+      return res.status(503).json({
+        error: 'Dashboard data not ready yet'
+      });
+    }
+
+    const briefs = await generateTabBriefs(cachedData);
+
+    let sessionLabel = null;
+    try { sessionLabel = getCurrentSession()?.name || null; } catch (e) { /* defensive */ }
+    const etDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+
+    if (briefs && briefs.generated) {
+      tabBriefsCache = briefs;
+      tabBriefsCacheKey = `${etDate}::${sessionLabel || 'unknown'}`;
+      tabBriefsCacheTime = Date.now();
+    }
+
+    res.json({ success: true, briefs });
+  } catch (error) {
+    console.error('Tab briefs refresh error:', error);
+    res.status(500).json({
+      error: 'Failed to refresh tab briefs',
+      message: error.message
+    });
+  }
 });
 
 // ============================================================================
