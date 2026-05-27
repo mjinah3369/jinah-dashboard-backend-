@@ -7,6 +7,22 @@ const API_KEY = process.env.ALPHA_VANTAGE_API_KEY || 'demo';
 // Mag7 — index-moving mega-caps. Get top priority in the earnings card.
 const MAG7 = new Set(['AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'TSLA']);
 
+// Tighter set than SP500: the names whose earnings genuinely move ES / NQ /
+// YM. Used for the "major earnings" briefing where we surface only the
+// reports a futures trader actually needs to know about — not the full
+// 500-ticker S&P universe. Targeted at roughly 30-35 names.
+const MAJOR_EARNINGS = new Set([
+  // Mag7 — always major
+  'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'TSLA',
+  // Other mega-cap tech / semis bellwethers
+  'AMD', 'ORCL', 'CRM', 'ADBE', 'NFLX', 'AVGO', 'TSM', 'ASML', 'AMAT',
+  // Major banks — move ES + YM
+  'JPM', 'BAC', 'GS', 'MS', 'WFC', 'C',
+  // Bellwethers across sectors
+  'BRK.B', 'V', 'MA', 'JNJ', 'UNH', 'WMT', 'COST', 'HD',
+  'XOM', 'CVX', 'KO', 'PEP', 'PG', 'MCD', 'DIS', 'BA'
+]);
+
 // Major banks — surfaced for the YM/ES affected-instrument mapping.
 const MAJOR_BANKS = new Set(['JPM', 'BAC', 'WFC', 'GS', 'C', 'MS', 'PNC', 'USB', 'TFC', 'COF']);
 
@@ -63,6 +79,60 @@ export async function fetchEconomicCalendar() {
   // Always return our curated economic calendar with proper dates
   // This includes NFP, CPI, FOMC, and other scheduled high-impact events
   return getDefaultEconomicEvents();
+}
+
+// Fetch the next-14-days slice of MAJOR earnings (Mag7 + ~25 bellwethers).
+// Returns: [{ symbol, reportDate, daysAway, affectedInstruments }] sorted
+// by daysAway ascending. Today's reports get daysAway=0.
+//
+// Used by tabBriefs to produce a brief that names the actual major movers
+// (or says "no major earnings today, next is X on date" when today is empty).
+export async function fetchMajorEarningsCalendar({ days = 14 } = {}) {
+  try {
+    // horizon=3month is the smallest range Alpha Vantage exposes that
+    // reliably covers the next 14 calendar days.
+    const url = `https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey=${API_KEY}`;
+    const response = await fetch(url);
+    const text = await response.text();
+    const lines = text.split('\n').filter(line => line.trim());
+    if (lines.length <= 1) return [];
+
+    // Compute today and the window end in ET.
+    const etTodayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date()); // YYYY-MM-DD
+    const today = new Date(etTodayStr + 'T00:00:00');
+    const windowEnd = new Date(today);
+    windowEnd.setDate(windowEnd.getDate() + days);
+
+    const out = [];
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',');
+      if (values.length < 3) continue;
+      const symbol = values[0]?.replace(/"/g, '').trim();
+      const reportDateStr = values[2]?.replace(/"/g, '').trim();
+      if (!symbol || !reportDateStr) continue;
+      if (!MAJOR_EARNINGS.has(symbol)) continue;
+
+      const reportDate = new Date(reportDateStr + 'T00:00:00');
+      if (!Number.isFinite(reportDate.getTime())) continue;
+      if (reportDate < today || reportDate > windowEnd) continue;
+
+      const daysAway = Math.round((reportDate - today) / (24 * 60 * 60 * 1000));
+      out.push({
+        symbol,
+        reportDate: reportDateStr,
+        daysAway,
+        affectedInstruments: getAffectedInstruments(symbol)
+      });
+    }
+    out.sort((a, b) => a.daysAway - b.daysAway || a.symbol.localeCompare(b.symbol));
+    return out;
+  } catch (error) {
+    console.error('Major earnings calendar fetch error:', error.message);
+    return [];
+  }
 }
 
 // Fetch earnings calendar — filtered to S&P 500 + Mag7 only.
