@@ -43,10 +43,24 @@ async function fetchYahooQuote(symbol) {
 
     const meta = result.meta;
     const quotes = result.indicators?.quote?.[0];
-    const prevClose = meta.chartPreviousClose || meta.previousClose;
+    const rawPrev = meta.chartPreviousClose ?? meta.previousClose ?? null;
     const price = meta.regularMarketPrice;
-    const change = price - prevClose;
-    const changePercent = (change / prevClose) * 100;
+
+    // Sanity-clamp the previousClose. Yahoo has returned wildly stale
+    // values (e.g., QQQ $609 when current was $730). Treat anything that
+    // would imply more than 15% intraday move as unreliable so downstream
+    // does not paint a fake change percent.
+    let prevClose = null, change = null, changePercent = null;
+    if (Number.isFinite(rawPrev) && rawPrev > 0 && Number.isFinite(price)) {
+      const candPct = ((price - rawPrev) / rawPrev) * 100;
+      if (Math.abs(candPct) <= 15) {
+        prevClose = rawPrev;
+        change = price - rawPrev;
+        changePercent = candPct;
+      } else {
+        console.warn(`[esCommandCenter] Implausible move for ${symbol}: ${candPct.toFixed(2)}% — discarding previousClose`);
+      }
+    }
 
     return {
       symbol,

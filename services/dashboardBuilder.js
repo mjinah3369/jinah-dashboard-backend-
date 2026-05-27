@@ -461,21 +461,27 @@ function generateRiskNotes(economicData, marketBias, vixLevel) {
     notes.push('Elevated VIX suggests increased volatility and potential for sharp moves');
   }
 
-  // Time-based notes
-  const hour = new Date().getHours();
+  // Time-based notes — read in ET, not the server's local clock. On Render
+  // the local clock is UTC, which is 4-5 hours ahead of ET, so the previous
+  // implementation fired "Pre-market" at 5 AM ET and "Late session" at 11 AM
+  // ET, both useless.
+  const etParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit', hour12: false, weekday: 'short'
+  }).formatToParts(new Date());
+  const hour = parseInt(etParts.find(p => p.type === 'hour')?.value ?? '12', 10);
+  const weekdayShort = etParts.find(p => p.type === 'weekday')?.value || '';
+
   if (hour < 10) {
     notes.push('Pre-market session - watch for gap fills at open');
   }
   if (hour >= 15) {
     notes.push('Late session - watch for end-of-day positioning');
   }
-
-  // Day of week notes
-  const dayOfWeek = new Date().getDay();
-  if (dayOfWeek === 5) {
+  if (weekdayShort === 'Fri') {
     notes.push('Friday session - potential for weekend positioning');
   }
-  if (dayOfWeek === 1) {
+  if (weekdayShort === 'Mon') {
     notes.push('Monday session - watch for gap risk from weekend news');
   }
 

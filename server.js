@@ -1655,7 +1655,10 @@ app.get('/api/levels/:symbol', async (req, res) => {
     // Calculate pivots if we have PDH/PDL
     const pdh = levels['PDH'];
     const pdl = levels['PDL'];
-    const prevClose = cachedData?.instruments?.[symbol]?.previousClose || currentPrice;
+    // If previousClose is missing, skip pivots — falling back to currentPrice
+    // collapses R1/R2/S1/S2 onto the same number, which silently displays
+    // bogus levels on the chart.
+    const prevClose = cachedData?.instruments?.[symbol]?.previousClose ?? null;
 
     if (pdh && pdl && prevClose) {
       const pivots = calculatePivots(pdh, pdl, prevClose);
