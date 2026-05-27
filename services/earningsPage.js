@@ -19,8 +19,46 @@ import {
   MAJOR_EARNINGS_AFFECTED
 } from './alphaVantage.js';
 import { fetchEarningsCalendarRange } from './finnhubEarnings.js';
-import { getChartData } from './technicalAnalysis.js';
 import { getCurrentSession } from './sessionEngine.js';
+
+/**
+ * Fetch daily candles for a stock symbol directly from Yahoo's chart API.
+ * Used here because the project's getChartData() in technicalAnalysis.js
+ * only supports a curated futures/ETF universe (YAHOO_SYMBOLS map) — it
+ * doesn't know about individual stock tickers like NVDA, AAPL, MSFT, etc.
+ *
+ * Returns an array of { time, close } sorted ascending, or [] on error.
+ * `range=1mo` is plenty of headroom to cover a 7-day lookback plus the
+ * weekend buffer.
+ */
+async function fetchStockDailyCandles(symbol) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1mo`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; MarketpulseEarnings/1.0)'
+      }
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return [];
+    const timestamps = result.timestamp || [];
+    const closes = result.indicators?.quote?.[0]?.close || [];
+    const out = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const t = timestamps[i];
+      const c = closes[i];
+      if (Number.isFinite(t) && Number.isFinite(c)) {
+        out.push({ time: t, close: c });
+      }
+    }
+    return out;
+  } catch (e) {
+    console.warn(`fetchStockDailyCandles(${symbol}) error:`, e.message);
+    return [];
+  }
+}
 
 const anthropic = process.env.ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -142,11 +180,12 @@ async function getRecentImpacts({ primaryDays = 7, fallbackCount = 5 } = {}) {
     if (unique.length >= 8) break; // hard cap on cards
   }
 
-  // For each, fetch daily candles and compute the day-of move.
+  // For each, fetch daily candles (direct Yahoo call — these are stock
+  // tickers, not in the curated YAHOO_SYMBOLS map) and compute the
+  // day-of move.
   const impacts = await Promise.allSettled(unique.map(async r => {
     try {
-      const chart = await getChartData(r.symbol, '1d');
-      const candles = chart?.candles || [];
+      const candles = await fetchStockDailyCandles(r.symbol);
       if (candles.length < 2) {
         return {
           symbol: r.symbol,
