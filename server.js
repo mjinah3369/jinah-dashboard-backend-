@@ -1121,42 +1121,69 @@ app.get('/api/final-analysis', async (req, res) => {
         Promise.allSettled(SNAPSHOT_ETFS.map(sym => getChartData(sym, '15m'))),
         Promise.allSettled(SNAPSHOT_ETFS.map(sym => getChartData(sym, '1d')))
       ]);
+      // ET-today as YYYY-MM-DD so we can tell whether the most recent daily
+      // candle is today's bar or yesterday's. Yahoo's chartPreviousClose has
+      // been observed to return wildly stale values (e.g., QQQ $609 when the
+      // current price is $730), so we derive everything from the candle
+      // history instead.
+      const etTodayKey = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(new Date());
+
+      const etDateOf = (epochSec) => new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(new Date(epochSec * 1000));
+
       const etfSnapshot = {};
       SNAPSHOT_ETFS.forEach((sym, i) => {
         const snap = snapshotResults[i];
         const daily = dailyResults[i];
         if (snap.status !== 'fulfilled' || snap.value?.error || !snap.value?.live) return;
+        if (daily.status !== 'fulfilled' || daily.value?.error) return;
 
-        const live = snap.value.live;
-        const prev = live.previousClose ?? null;
-        const price = live.price ?? null;
-        if (!Number.isFinite(price) || !Number.isFinite(prev) || prev === 0) return;
+        const price = snap.value.live.price ?? null;
+        const candles = daily.value.candles || [];
+        if (!Number.isFinite(price) || candles.length < 2) return;
 
-        // Today's intraday so-far: current price vs yesterday's close.
-        // During pre-market this is naturally ~0% — that's correct and the LLM
-        // is now told to report it as-is rather than borrow yesterday's numbers.
-        const todayPct = ((price - prev) / prev) * 100;
+        // Detect whether the last daily candle is today's forming bar or
+        // yesterday's fully-closed bar by comparing its ET-date to ET-today.
+        const lastBar = candles[candles.length - 1];
+        const lastBarIsToday = lastBar?.time && etDateOf(lastBar.time) === etTodayKey;
 
-        // Yesterday's session move from daily candles. Layout:
-        //   candles[last]   = today's bar (forming or current — close ≈ live.price)
-        //   candles[last-1] = yesterday's fully-closed bar
-        //   candles[last-2] = day-before's fully-closed bar
-        // Yesterday's pct = (yesterday close - day-before close) / day-before close
+        // Resolve "yesterday's close" and "day-before-yesterday's close" from
+        // whichever index layout applies.
+        let yesterdayClose, dayBeforeClose;
+        if (lastBarIsToday) {
+          // [..., dayBefore, yesterday, today(forming)]
+          yesterdayClose = candles[candles.length - 2]?.close;
+          dayBeforeClose = candles[candles.length - 3]?.close;
+        } else {
+          // [..., dayBefore, yesterday]   (no today bar yet — common at
+          // pre-market for ETFs, since Yahoo only adds the daily bar after
+          // the regular session ticks)
+          yesterdayClose = candles[candles.length - 1]?.close;
+          dayBeforeClose = candles[candles.length - 2]?.close;
+        }
+
+        // Yesterday's full-session move (close vs prior session close).
         let previousDayPct = null;
-        if (daily.status === 'fulfilled' && !daily.value?.error) {
-          const candles = daily.value.candles || [];
-          if (candles.length >= 3) {
-            const yesterdayClose = candles[candles.length - 2]?.close;
-            const dayBeforeClose = candles[candles.length - 3]?.close;
-            if (Number.isFinite(yesterdayClose) && Number.isFinite(dayBeforeClose) && dayBeforeClose !== 0) {
-              previousDayPct = ((yesterdayClose - dayBeforeClose) / dayBeforeClose) * 100;
-            }
-          }
+        if (Number.isFinite(yesterdayClose) && Number.isFinite(dayBeforeClose) && dayBeforeClose !== 0) {
+          previousDayPct = ((yesterdayClose - dayBeforeClose) / dayBeforeClose) * 100;
+        }
+
+        // Today's intraday so-far: current price vs yesterday's close. During
+        // pre-market this is naturally ~0% — that's correct and the LLM is
+        // told to report it honestly rather than borrow yesterday's numbers.
+        let todayPct = null;
+        if (Number.isFinite(yesterdayClose) && yesterdayClose !== 0) {
+          todayPct = ((price - yesterdayClose) / yesterdayClose) * 100;
         }
 
         etfSnapshot[sym] = {
           price,
-          previousClose: prev,
+          previousClose: yesterdayClose,
           todayPct,
           previousDayPct
         };
