@@ -81,28 +81,38 @@ export async function fetchEconomicCalendar() {
   return getDefaultEconomicEvents();
 }
 
-// Fetch the next-14-days slice of MAJOR earnings (Mag7 + ~25 bellwethers).
-// Returns: [{ symbol, reportDate, daysAway, affectedInstruments }] sorted
-// by daysAway ascending. Today's reports get daysAway=0.
+// Fetch the major-earnings calendar (Mag7 + ~25 bellwethers) within an
+// arbitrary window relative to today. Returns:
+//   [{ symbol, reportDate, daysAway, affectedInstruments }]
+// sorted by daysAway ascending. daysAway is negative for past reports.
 //
-// Used by tabBriefs to produce a brief that names the actual major movers
-// (or says "no major earnings today, next is X on date" when today is empty).
-export async function fetchMajorEarningsCalendar({ days = 14 } = {}) {
+// Default window: today through next 14 days (forward-looking, used by
+// tabBriefs and the "Upcoming" section of the earnings page).
+//
+// Pass { daysBack: 7 } to also include the past 7 days — used by the
+// Earnings page "Latest Impacts" section.
+//
+// Note: Alpha Vantage's EARNINGS_CALENDAR endpoint always returns FUTURE
+// reports from today onward (regardless of the 'horizon' param). So when
+// `daysBack > 0`, we cannot pull historical reports from this endpoint —
+// callers needing past reports should use their own historical store or
+// fall back to symbol-by-symbol queries. This function returns the
+// forward window only; past entries will be empty.
+export async function fetchMajorEarningsCalendar({ days = 14, daysBack = 0 } = {}) {
   try {
-    // horizon=3month is the smallest range Alpha Vantage exposes that
-    // reliably covers the next 14 calendar days.
     const url = `https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey=${API_KEY}`;
     const response = await fetch(url);
     const text = await response.text();
     const lines = text.split('\n').filter(line => line.trim());
     if (lines.length <= 1) return [];
 
-    // Compute today and the window end in ET.
     const etTodayStr = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/New_York',
       year: 'numeric', month: '2-digit', day: '2-digit'
     }).format(new Date()); // YYYY-MM-DD
     const today = new Date(etTodayStr + 'T00:00:00');
+    const windowStart = new Date(today);
+    windowStart.setDate(windowStart.getDate() - daysBack);
     const windowEnd = new Date(today);
     windowEnd.setDate(windowEnd.getDate() + days);
 
@@ -117,7 +127,7 @@ export async function fetchMajorEarningsCalendar({ days = 14 } = {}) {
 
       const reportDate = new Date(reportDateStr + 'T00:00:00');
       if (!Number.isFinite(reportDate.getTime())) continue;
-      if (reportDate < today || reportDate > windowEnd) continue;
+      if (reportDate < windowStart || reportDate > windowEnd) continue;
 
       const daysAway = Math.round((reportDate - today) / (24 * 60 * 60 * 1000));
       out.push({
@@ -134,6 +144,16 @@ export async function fetchMajorEarningsCalendar({ days = 14 } = {}) {
     return [];
   }
 }
+
+/**
+ * The full set of major-earnings tickers — exported so other services can
+ * filter against the same universe (e.g., the Earnings page service builds
+ * a historical "recent impacts" list by checking which of these reported
+ * over the past 1-2 weeks, since Alpha Vantage only returns future entries
+ * from the calendar endpoint).
+ */
+export const MAJOR_EARNINGS_TICKERS = MAJOR_EARNINGS;
+export const MAJOR_EARNINGS_AFFECTED = getAffectedInstruments;
 
 // Fetch earnings calendar — filtered to S&P 500 + Mag7 only.
 // Pre-fix this took the alphabetical top 10 of Alpha Vantage's CSV which
