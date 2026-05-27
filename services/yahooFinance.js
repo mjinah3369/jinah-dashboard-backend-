@@ -1,6 +1,34 @@
 // Yahoo Finance - Futures Prices (No API key needed)
 // Uses the unofficial Yahoo Finance API with fallback data
 
+// Sanity threshold for an "implausible" intra-day price move. Yahoo's chart
+// meta has been observed to return stale or wrong chartPreviousClose values
+// (e.g., QQQ previousClose=$609 when price=$730 → implied 19.87% move). When
+// |implied move| exceeds this threshold we treat previousClose as unreliable
+// and surface change/changePercent as null so downstream code can fall back
+// gracefully rather than render a fake 0.00% / fake huge %.
+const IMPLAUSIBLE_MOVE_PCT = 15;
+
+/**
+ * Resolve a trustworthy previousClose + change pair from Yahoo's meta block.
+ * Returns { prevClose, change, changePercent } where any field is null when
+ * the upstream data is missing or implausible. Callers should treat null as
+ * "no reliable %change available" and avoid displaying a misleading 0.00%.
+ */
+function resolvePrevClose(meta, price, symbol) {
+  const raw = meta?.chartPreviousClose ?? meta?.previousClose ?? null;
+  if (!Number.isFinite(raw) || raw <= 0 || !Number.isFinite(price)) {
+    return { prevClose: null, change: null, changePercent: null };
+  }
+  const change = price - raw;
+  const changePercent = (change / raw) * 100;
+  if (Math.abs(changePercent) > IMPLAUSIBLE_MOVE_PCT) {
+    console.warn(`[yahooFinance] Implausible move for ${symbol || 'symbol'}: ${changePercent.toFixed(2)}% (price=${price}, prevClose=${raw}) — discarding previousClose`);
+    return { prevClose: null, change: null, changePercent: null };
+  }
+  return { prevClose: raw, change, changePercent };
+}
+
 // Retry helper for Yahoo's flaky 429 (Too Many Requests) and 503 responses.
 // Native fetch + setTimeout, no new deps. One retry with 2s backoff.
 const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -187,18 +215,16 @@ export async function fetchYahooFinanceFutures() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       return {
         symbol: config.symbol,
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
           volume: meta.regularMarketVolume || 0,
@@ -338,9 +364,7 @@ export async function fetchCurrencyFutures() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
       const decimals = config.symbol === 'DX' ? 2 : 4;
 
       return {
@@ -348,9 +372,9 @@ export async function fetchCurrencyFutures() {
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(decimals)),
-          change: parseFloat(change.toFixed(decimals)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(decimals)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(decimals)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(decimals)) : null),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
           fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || 0,
@@ -445,9 +469,7 @@ export async function fetchInternationalIndices() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
       const sessionStatus = getSessionStatus(config.timezone, config.marketHours);
 
       return {
@@ -455,9 +477,9 @@ export async function fetchInternationalIndices() {
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
           marketState: sessionStatus === 'LIVE' ? 'REGULAR' : 'CLOSED',
@@ -574,18 +596,16 @@ export async function fetchSectorETFs() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       return {
         symbol: config.symbol,
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2))
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null)
         }
       };
     } catch (error) {
@@ -693,9 +713,7 @@ export async function fetchMag7Stocks() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       // Determine trend status
       let trend = 'Flat';
@@ -710,9 +728,9 @@ export async function fetchMag7Stocks() {
           name: config.name,
           description: config.description,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null),
           marketCap: 0, // Not available in v8 API
           marketCapFormatted: 'N/A',
           fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || 0,
@@ -834,18 +852,16 @@ export async function fetchTreasuryYields() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const yieldValue = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || yieldValue;
-      const change = yieldValue - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, yieldValue, config.symbol);
 
       return {
         symbol: config.symbol,
         data: {
           name: config.name,
           yield: parseFloat(yieldValue.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2))
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null)
         }
       };
     } catch (error) {
@@ -923,18 +939,16 @@ export async function fetchCryptoPrices() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       return {
         symbol: config.symbol,
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2))
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null)
         }
       };
     } catch (error) {
@@ -1273,9 +1287,7 @@ export async function fetchAsiaInstruments() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       // Determine decimal places based on instrument
       const decimals = config.symbol === '6J' ? 6 :
@@ -1286,8 +1298,8 @@ export async function fetchAsiaInstruments() {
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(decimals)),
-          change: parseFloat(change.toFixed(decimals)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(decimals)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
           volume: meta.regularMarketVolume || 0,
@@ -1352,17 +1364,15 @@ export async function fetchLondonInstruments() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       return {
         symbol: config.symbol,
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(4)),
-          change: parseFloat(change.toFixed(4)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(4)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
           session: 'london'
@@ -1427,9 +1437,7 @@ export async function fetchUSInstruments() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       // Add interpretation for HYG
       let interpretation = null;
@@ -1446,8 +1454,8 @@ export async function fetchUSInstruments() {
         data: {
           name: config.name,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
           high: meta.regularMarketDayHigh || price,
           low: meta.regularMarketDayLow || price,
           session: 'us',
@@ -1538,9 +1546,7 @@ export async function fetchBreadthIndicators() {
       if (!meta || !meta.regularMarketPrice) return null;
 
       const price = meta.regularMarketPrice;
-      const prevClose = meta.chartPreviousClose || price;
-      const change = price - prevClose;
-      const changePercent = prevClose ? (change / prevClose * 100) : 0;
+      const { prevClose, change, changePercent } = resolvePrevClose(meta, price, config.symbol);
 
       // Calculate volume ratio (today vs 5-day average)
       let volumeRatio = 1;
@@ -1559,9 +1565,9 @@ export async function fetchBreadthIndicators() {
           name: config.name,
           description: config.description,
           price: parseFloat(price.toFixed(2)),
-          change: parseFloat(change.toFixed(2)),
-          changePercent: parseFloat(changePercent.toFixed(2)),
-          previousClose: parseFloat(prevClose.toFixed(2)),
+          change: (Number.isFinite(change) ? parseFloat(change.toFixed(2)) : null),
+          changePercent: (Number.isFinite(changePercent) ? parseFloat(changePercent.toFixed(2)) : null),
+          previousClose: (Number.isFinite(prevClose) ? parseFloat(prevClose.toFixed(2)) : null),
           volume: meta.regularMarketVolume || 0,
           volumeRatio: parseFloat(volumeRatio.toFixed(2)),
           volumeSignal: volumeRatio > 1.5 ? 'HIGH' : volumeRatio < 0.7 ? 'LOW' : 'NORMAL'

@@ -1,6 +1,24 @@
 // Fundamental Reports Service
 // Provides calendar data for high-impact market reports across all sectors
 
+// All "today" / "tomorrow" / "this week" logic must be read in ET — on Render
+// the server clock is UTC and Date.getDate()/getHours() returns the UTC wall
+// time, which is 4-5 hours ahead of ET. Between 8 PM ET and midnight ET this
+// causes the calendar to label tomorrow as "Today", and the "past 5 PM" rollover
+// to fire at 1 PM ET.
+function etDateKey(date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(date); // YYYY-MM-DD
+}
+function etHour(date) {
+  return parseInt(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit', hour12: false
+  }).format(date), 10);
+}
+
 // ============================================================================
 // ENERGY REPORTS (CL, NG, RB)
 // ============================================================================
@@ -370,9 +388,8 @@ function getNextWeekday(dayOfWeek, fromDate = new Date()) {
   if (daysToAdd < 0) {
     daysToAdd += 7;
   } else if (daysToAdd === 0) {
-    // If today is the target day, check if the report time has passed
-    const now = new Date();
-    if (now.getHours() >= 17) { // Past 5 PM, get next week
+    // If today is the target day, check if the report time has passed (5 PM ET).
+    if (etHour(new Date()) >= 17) {
       daysToAdd = 7;
     }
   }
@@ -427,24 +444,19 @@ function formatDate(date) {
 }
 
 /**
- * Check if date is today
+ * Check if date is today (in ET, since the calendar lives in ET).
  */
 function isToday(date) {
-  const today = new Date();
-  return date.getDate() === today.getDate() &&
-         date.getMonth() === today.getMonth() &&
-         date.getFullYear() === today.getFullYear();
+  return etDateKey(date) === etDateKey(new Date());
 }
 
 /**
- * Check if date is tomorrow
+ * Check if date is tomorrow (in ET).
  */
 function isTomorrow(date) {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return date.getDate() === tomorrow.getDate() &&
-         date.getMonth() === tomorrow.getMonth() &&
-         date.getFullYear() === tomorrow.getFullYear();
+  const tomorrowEt = new Date();
+  tomorrowEt.setDate(tomorrowEt.getDate() + 1);
+  return etDateKey(date) === etDateKey(tomorrowEt);
 }
 
 /**
