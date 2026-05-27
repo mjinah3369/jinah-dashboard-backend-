@@ -125,6 +125,7 @@ import {
 import { registerAdminVpRoutes } from './services/adminVP.js';
 import { getInstrumentDetail } from './services/instrumentDetail.js';
 import { generateTabBriefs } from './services/tabBriefs.js';
+import { generateEarningsPage } from './services/earningsPage.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1038,6 +1039,13 @@ let tabBriefsCacheKey = null;
 let tabBriefsCacheTime = null;
 const TAB_BRIEFS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
 
+// Earnings page cache (Step 21). Heavier than tab briefs because it pulls
+// Finnhub history + 8 Yahoo daily fetches + a Sonnet call. 5-min TTL.
+let earningsPageCache = null;
+let earningsPageCacheKey = null;
+let earningsPageCacheTime = null;
+const EARNINGS_PAGE_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
 // Get comprehensive final analysis with bias for ES, NQ, YM, RTY, GC, CL
 app.get('/api/final-analysis', async (req, res) => {
   try {
@@ -1241,6 +1249,9 @@ app.post('/api/final-analysis/refresh', async (req, res) => {
     tabBriefsCache = null;
     tabBriefsCacheKey = null;
     tabBriefsCacheTime = null;
+    earningsPageCache = null;
+    earningsPageCacheKey = null;
+    earningsPageCacheTime = null;
 
     // Fetch fresh market data
     const [futuresResult, currencyResult, sectorResult, mag7Result] = await Promise.allSettled([
@@ -1386,6 +1397,89 @@ app.post('/api/tab-briefs/refresh', async (req, res) => {
     console.error('Tab briefs refresh error:', error);
     res.status(500).json({
       error: 'Failed to refresh tab briefs',
+      message: error.message
+    });
+  }
+});
+
+// ============================================================================
+// EARNINGS PAGE ENDPOINT (Step 21)
+// Returns the three-section payload for the Earnings tab page redesign:
+//   - latestImpacts: major reports from the past 7 days with price-move
+//     verdicts (or last 5 reports if past 7 days is empty)
+//   - upcoming: major reports scheduled in the next 14 days
+//   - whatToLookFor: Sonnet 4 narrative + themes
+// Cached 5 min, ET-date + session keyed.
+// ============================================================================
+
+app.get('/api/earnings/page', async (req, res) => {
+  try {
+    let sessionLabel = null;
+    try { sessionLabel = getCurrentSession()?.name || null; } catch (e) { /* defensive */ }
+
+    const etDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+    const cacheKey = `${etDate}::${sessionLabel || 'unknown'}`;
+
+    const now = Date.now();
+    const cacheFresh = earningsPageCache
+      && earningsPageCacheKey === cacheKey
+      && earningsPageCacheTime
+      && (now - earningsPageCacheTime) < EARNINGS_PAGE_CACHE_DURATION;
+
+    if (cacheFresh) {
+      return res.json(earningsPageCache);
+    }
+
+    const payload = await generateEarningsPage();
+
+    // Cache only if the LLM narrative actually generated. The data sections
+    // are useful even without the narrative, but a partial cache makes the
+    // refresh button useful for retrying just the LLM.
+    if (payload?.whatToLookFor?.generated) {
+      earningsPageCache = payload;
+      earningsPageCacheKey = cacheKey;
+      earningsPageCacheTime = Date.now();
+    }
+
+    res.json(payload);
+  } catch (error) {
+    console.error('Earnings page error:', error);
+    res.status(500).json({
+      error: 'Failed to build earnings page',
+      message: error.message
+    });
+  }
+});
+
+app.post('/api/earnings/page/refresh', async (req, res) => {
+  try {
+    earningsPageCache = null;
+    earningsPageCacheKey = null;
+    earningsPageCacheTime = null;
+
+    const payload = await generateEarningsPage();
+
+    let sessionLabel = null;
+    try { sessionLabel = getCurrentSession()?.name || null; } catch (e) { /* defensive */ }
+    const etDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+
+    if (payload?.whatToLookFor?.generated) {
+      earningsPageCache = payload;
+      earningsPageCacheKey = `${etDate}::${sessionLabel || 'unknown'}`;
+      earningsPageCacheTime = Date.now();
+    }
+
+    res.json({ success: true, payload });
+  } catch (error) {
+    console.error('Earnings page refresh error:', error);
+    res.status(500).json({
+      error: 'Failed to refresh earnings page',
       message: error.message
     });
   }
