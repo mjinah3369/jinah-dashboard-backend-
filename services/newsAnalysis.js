@@ -5,6 +5,8 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import fs from 'fs/promises';
+import path from 'path';
 import { fetchGoogleSheetsNews, clearGoogleSheetsCache } from './googleSheets.js';
 import { fetchUnifiedNews, clearUnifiedNewsCache } from './unifiedNews.js';
 
@@ -20,8 +22,78 @@ function getAnthropicClient() {
   return anthropic;
 }
 
-// Cache for analyzed news
+// ============================================================================
+// DISK-PERSISTED HEADLINE ANALYSIS CACHE (Step 25)
+// ============================================================================
+// Previously: in-memory Map only. Every Render restart (which happens on
+// every deploy) wiped the cache, so the next dashboard pre-warm re-analyzed
+// every cached headline through Sonnet — €3-5 per restart, compounding
+// during dev cycles.
+//
+// Now: same Map, plus a debounced write to a JSON file on disk. On boot
+// we load whatever's there. If the disk read fails (corrupted, missing,
+// read-only filesystem, etc.) we fall back to an empty Map — exactly the
+// pre-fix behavior. Zero downside.
+//
+// Cap: 2000 entries (LRU eviction). Each entry is ~300-500 bytes so the
+// file stays under 1 MB. Save is debounced to 30s so frequent inserts
+// during a burst of new headlines don't beat up the disk.
+//
+// Storage location: $CACHE_DIR if set (use a Render persistent disk for
+// cross-restart durability), otherwise ./cache/ relative to cwd. Works
+// either way; the persistent disk just buys you survival across deploys.
+const CACHE_DIR = process.env.CACHE_DIR || path.resolve('./cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'news-analysis-cache.json');
+const CACHE_MAX_ENTRIES = 2000;
+const CACHE_SAVE_DEBOUNCE_MS = 30 * 1000;
+
 let analysisCache = new Map();
+let pendingSaveTimer = null;
+
+async function loadAnalysisCacheFromDisk() {
+  try {
+    const raw = await fs.readFile(CACHE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      analysisCache = new Map(parsed);
+      console.log(`[newsAnalysis] loaded ${analysisCache.size} cached headline analyses from disk`);
+    }
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.log('[newsAnalysis] no on-disk cache yet (first run on this instance)');
+    } else {
+      console.warn('[newsAnalysis] disk cache load failed, starting fresh:', err.message);
+    }
+    analysisCache = new Map();
+  }
+}
+
+// Boot-time load — fire-and-forget; cache reads work with whatever's loaded
+// at the time, including the empty-Map start state if disk hasn't returned yet.
+loadAnalysisCacheFromDisk();
+
+async function saveAnalysisCacheToDisk() {
+  pendingSaveTimer = null;
+  try {
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+
+    // Cap and dump. Map preserves insertion order; cap from the OLDEST side.
+    if (analysisCache.size > CACHE_MAX_ENTRIES) {
+      const entries = Array.from(analysisCache.entries());
+      analysisCache = new Map(entries.slice(-CACHE_MAX_ENTRIES));
+    }
+    const payload = JSON.stringify(Array.from(analysisCache.entries()));
+    await fs.writeFile(CACHE_FILE, payload, 'utf8');
+  } catch (err) {
+    console.warn('[newsAnalysis] disk cache save failed (continuing in-memory only):', err.message);
+  }
+}
+
+function scheduleCacheSave() {
+  if (pendingSaveTimer) return; // already queued
+  pendingSaveTimer = setTimeout(saveAnalysisCacheToDisk, CACHE_SAVE_DEBOUNCE_MS);
+}
+
 let lastFullAnalysis = null;
 let fullAnalysisTime = null;
 const ANALYSIS_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes for full analysis
@@ -197,9 +269,14 @@ export async function analyzeHeadlinesBatch(headlines) {
     const prompt = buildAnalysisPrompt(headlines);
 
     console.log('Calling Claude API for', headlines.length, 'headlines...');
+    // max_tokens was 4096. Measured JSON output for 10-headline batches is
+    // ~600-800 tokens. Cap at 1500 to leave 2x headroom. On the rare batch
+    // that would have run longer, the truncated JSON falls through to the
+    // catch block → those headlines get the "analysisUnavailable" fallback
+    // tag, which is what already happens on any other API error.
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
+      max_tokens: 1500,
       messages: [
         { role: 'user', content: prompt }
       ]
@@ -318,6 +395,7 @@ export async function fetchAnalyzedNews(options = {}) {
         const hash = getHeadlineHash(item);
         analysisCache.set(hash, item);
       }
+      scheduleCacheSave();
 
       newlyAnalyzed = newlyAnalyzed.concat(analyzed);
     }
@@ -368,6 +446,7 @@ export async function fetchHighImpactNews(limit = 5, freshHours = 24) {
 export async function refreshNewsAnalysis() {
   clearGoogleSheetsCache();
   analysisCache.clear();
+  scheduleCacheSave();
   lastFullAnalysis = null;
   fullAnalysisTime = null;
 
@@ -470,6 +549,7 @@ export async function analyzeAllSourcesNews(options = {}) {
         const hash = getHeadlineHash(item);
         analysisCache.set(hash, item);
       }
+      scheduleCacheSave();
 
       newlyAnalyzed = newlyAnalyzed.concat(analyzed);
     }
