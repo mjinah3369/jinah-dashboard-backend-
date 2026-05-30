@@ -38,7 +38,7 @@ const failedAuthAttempts = new Map();
 const ipBans = new Map();
 
 let _supabase = null;
-function getSupabaseClient() {
+export function getSupabaseClient() {
   if (_supabase) return _supabase;
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY;
@@ -78,7 +78,7 @@ function recordFailedAuth(ip) {
   }
 }
 
-function checkTokenOnly(req) {
+export function checkTokenOnly(req) {
   const ip = getClientIp(req);
   if (isIpBanned(ip)) {
     return {
@@ -109,7 +109,7 @@ function checkTokenOnly(req) {
   return { ok: true, ip };
 }
 
-function checkTokenAndPassword(req) {
+export function checkTokenAndPassword(req) {
   const tokenCheck = checkTokenOnly(req);
   if (!tokenCheck.ok) return tokenCheck;
   const expectedPassword = process.env.ADMIN_VP_PASSWORD;

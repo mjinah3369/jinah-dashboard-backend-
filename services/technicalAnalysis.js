@@ -631,7 +631,8 @@ const INTERVAL_CONFIG = {
   '5m': { interval: '5m', range: '5d', label: '5 Min' },
   '15m': { interval: '15m', range: '10d', label: '15 Min' },
   '1h': { interval: '1h', range: '1mo', label: '1 Hour' },
-  '1d': { interval: '1d', range: '3mo', label: 'Daily' }
+  '1d': { interval: '1d', range: '3mo', label: 'Daily' },
+  '1w': { interval: '1wk', range: '2y', label: 'Weekly' }
 };
 
 /**
@@ -723,6 +724,7 @@ async function getChartData(symbol, interval = '1d') {
       // close). Round to the timeframe's bucket so the chart treats it as a
       // distinct bar.
       const intervalSecs = {
+        '1wk': 604800,
         '1d':  86400,
         '1h':  3600,
         '15m': 900,

@@ -123,6 +123,7 @@ import {
   getFinalAnalysisCacheStatus
 } from './services/finalAnalysis.js';
 import { registerAdminVpRoutes } from './services/adminVP.js';
+import { registerChartAnnotationRoutes } from './services/chartAnnotations.js';
 import { getInstrumentDetail } from './services/instrumentDetail.js';
 import { generateTabBriefs } from './services/tabBriefs.js';
 import { generateEarningsPage } from './services/earningsPage.js';
@@ -2533,6 +2534,13 @@ app.post('/api/warwatch/analysis/refresh', (req, res) => {
 //                    SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 registerAdminVpRoutes(app);
 
+// ---- Chart annotations (founder's drawn weekly/daily analysis) ----
+// POST /api/admin/annotations/:token  — save shapes + note (token + password)
+// GET  /api/admin/annotations/:token  — admin history (token only)
+// GET  /api/annotations/:symbol       — PUBLIC read of the active annotation
+// Reuses ADMIN_VP_URL_TOKEN / ADMIN_VP_PASSWORD / admin_vp_secret (same admin).
+registerChartAnnotationRoutes(app);
+
 // WarWatch SSE broadcast interval — push updates to all connected clients every 3 minutes
 setInterval(async () => {
   if (warWatchPollingClients.length === 0) return;
@@ -2706,5 +2714,7 @@ app.listen(PORT, () => {
   console.log(`WarWatch Live Stream: http://localhost:${PORT}/api/warwatch/stream`);
   console.log(`WarWatch AI Analysis: http://localhost:${PORT}/api/warwatch/analysis`);
   console.log(`Admin VP entry: http://localhost:${PORT}/api/admin/vp/:token`);
+  console.log(`Chart annotations (admin): http://localhost:${PORT}/api/admin/annotations/:token`);
+  console.log(`Chart annotations (public): http://localhost:${PORT}/api/annotations/:symbol?timeframe=1w`);
   console.log(`Instrument Detail: http://localhost:${PORT}/api/instrument/:symbol/detail`);
 });
