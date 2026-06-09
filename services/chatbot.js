@@ -932,7 +932,7 @@ For educational/research questions: be as thorough as needed (up to 500 words).`
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 1500,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -997,7 +997,7 @@ Explain in 2-3 sentences:
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -1046,7 +1046,7 @@ Explain in 3-4 bullet points:
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 800,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -1237,7 +1237,7 @@ RULES:
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -1407,7 +1407,7 @@ INSTRUCTIONS:
 Aim for 200-500 words depending on complexity.`;
 
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 2000,
       messages: [{ role: 'user', content: prompt }]
     });

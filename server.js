@@ -552,7 +552,7 @@ app.get('/api/economic-indicators', (req, res) => {
 // Cache for technical analysis (expensive operation)
 let technicalCache = null;
 let technicalLastFetch = null;
-const TECHNICAL_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+const TECHNICAL_CACHE_DURATION = 60 * 60 * 1000; // 60 minutes (cost control: was 10 min)
 
 // Get technical analysis for all main instruments
 app.get('/api/technicals', async (req, res) => {
@@ -1035,7 +1035,7 @@ const MARKET_DATA_CACHE_DURATION = 2 * 60 * 1000; // 2 minutes
 let aiSynthesisCache = null;
 let aiSynthesisCacheKey = null;
 let aiSynthesisCacheTime = null;
-const AI_SYNTHESIS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
+const AI_SYNTHESIS_CACHE_DURATION = 60 * 60 * 1000; // 60 minutes (cost control: was 4 min)
 
 // Tab briefs cache (Step 18). Single LLM call returns 4 plain-English briefs
 // for the Mega-Cap Tech / Earnings / Sectors / International nav-rail tabs.
@@ -1044,14 +1044,14 @@ const AI_SYNTHESIS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
 let tabBriefsCache = null;
 let tabBriefsCacheKey = null;
 let tabBriefsCacheTime = null;
-const TAB_BRIEFS_CACHE_DURATION = 4 * 60 * 1000; // 4 minutes
+const TAB_BRIEFS_CACHE_DURATION = 60 * 60 * 1000; // 60 minutes (cost control: was 4 min)
 
 // Earnings page cache (Step 21). Heavier than tab briefs because it pulls
 // Finnhub history + 8 Yahoo daily fetches + a Sonnet call. 5-min TTL.
 let earningsPageCache = null;
 let earningsPageCacheKey = null;
 let earningsPageCacheTime = null;
-const EARNINGS_PAGE_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const EARNINGS_PAGE_CACHE_DURATION = 60 * 60 * 1000; // 60 minutes (cost control: was 5 min)
 
 // Get comprehensive final analysis with bias for ES, NQ, YM, RTY, GC, CL
 app.get('/api/final-analysis', async (req, res) => {
@@ -2601,13 +2601,24 @@ async function prewarmDashboard(label) {
   await inflightFetch;
 }
 
-// Kick off initial fetch on boot so the first user never sees the cold-start delay
-prewarmDashboard('boot').catch(() => {});
+// COST CONTROL: the background pre-warm fires a Claude call every few minutes
+// 24/7 whether or not anyone is using the dashboard. For a dev project that is
+// the dominant API cost. It is now OFF by default and only runs when
+// ENABLE_PREWARM=true is set in the environment. With it off, dashboard data
+// (and its AI summary) is generated on-demand the first time a page is opened.
+const ENABLE_PREWARM = process.env.ENABLE_PREWARM === 'true';
 
-dashboardRefreshTimer = setInterval(
-  () => { prewarmDashboard('interval').catch(() => {}); },
-  DASHBOARD_REFRESH_INTERVAL
-);
+if (ENABLE_PREWARM) {
+  // Kick off initial fetch on boot so the first user never sees the cold-start delay
+  prewarmDashboard('boot').catch(() => {});
+
+  dashboardRefreshTimer = setInterval(
+    () => { prewarmDashboard('interval').catch(() => {}); },
+    DASHBOARD_REFRESH_INTERVAL
+  );
+} else {
+  console.log('[prewarm] dashboard pre-warm DISABLED (set ENABLE_PREWARM=true to enable). Saves idle API cost.');
+}
 
 // ============================================================================
 // SESSION BRIEF BACKGROUND PRE-WARM (Fix 2 v2)
@@ -2666,16 +2677,23 @@ async function runBriefPrewarm(label) {
   });
 }
 
-// Boot pre-warm DELAYED so it doesn't race with dashboard pre-warm at startup.
-briefBootTimeout = setTimeout(
-  () => { runBriefPrewarm('boot').catch(() => {}); },
-  BOOT_PREWARM_DELAY_MS
-);
+// COST CONTROL: gated behind the same ENABLE_PREWARM flag as the dashboard
+// pre-warm above. OFF by default so the session brief is generated on-demand
+// (first page open after cache expiry) instead of on a 24/7 timer.
+if (ENABLE_PREWARM) {
+  // Boot pre-warm DELAYED so it doesn't race with dashboard pre-warm at startup.
+  briefBootTimeout = setTimeout(
+    () => { runBriefPrewarm('boot').catch(() => {}); },
+    BOOT_PREWARM_DELAY_MS
+  );
 
-briefRefreshTimer = setInterval(
-  () => { runBriefPrewarm('interval').catch(() => {}); },
-  BRIEF_REFRESH_INTERVAL
-);
+  briefRefreshTimer = setInterval(
+    () => { runBriefPrewarm('interval').catch(() => {}); },
+    BRIEF_REFRESH_INTERVAL
+  );
+} else {
+  console.log('[prewarm] session-brief pre-warm DISABLED (set ENABLE_PREWARM=true to enable).');
+}
 
 // Diagnostic endpoint: lets ops see whether the session brief is currently
 // AI-generated or fallback-rendered without opening the UI.

@@ -30,7 +30,7 @@ const anthropic = new Anthropic({
 
 // Cache for agent results (5 minute TTL)
 const agentCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000;
+const CACHE_TTL = 60 * 60 * 1000; // 60 min (cost control: was 5 min)
 
 // ============================================================================
 // SESSION BRIEF CACHE (Fix 2)
@@ -44,7 +44,7 @@ const CACHE_TTL = 5 * 60 * 1000;
 // background pre-warm can simply overwrite the entry and the first user
 // after expiry never triggers a cold LLM call.
 const briefCache = new Map();   // sessionKey -> { value, timestamp }
-const BRIEF_TTL = 5 * 60 * 1000; // 5 minutes
+const BRIEF_TTL = 60 * 60 * 1000; // 60 minutes (cost control: was 5 min)
 
 function getBriefFromCache(sessionKey) {
   const entry = briefCache.get(sessionKey);
@@ -469,7 +469,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -516,7 +516,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -682,7 +682,7 @@ Respond in JSON format ONLY (no markdown, no explanation):
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -758,7 +758,7 @@ Provide a unified trading brief. Respond in JSON format ONLY (no markdown, no ex
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 1500,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -929,7 +929,7 @@ Respond in JSON format ONLY:
     const LLM_TIMEOUT_MS = 15_000;
     const response = await Promise.race([
       anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
         max_tokens: 500,
         messages: [{ role: 'user', content: prompt }]
       }),

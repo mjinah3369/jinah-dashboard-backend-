@@ -1568,7 +1568,7 @@ Write the brief focusing on:
 Keep it conversational but professional. No bullet points, just flowing text. Start with the most important thing to watch.`;
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 300,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -1808,7 +1808,7 @@ Respond in JSON format ONLY:
 }`;
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens: 800,
       messages: [{ role: 'user', content: prompt }]
     });
